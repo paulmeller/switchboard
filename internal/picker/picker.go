@@ -75,11 +75,11 @@ func Pick(order []string, statuses []provider.Status, cooldown state.State, rows
 			}
 		}
 		rank := func(c Candidate) int {
-			if c.Exhausted {
-				return 2
-			}
 			if c.Headroom == nil {
 				return 1
+			}
+			if *c.Headroom <= 0 {
+				return 2
 			}
 			return 0
 		}
@@ -88,13 +88,13 @@ func Pick(order []string, statuses []provider.Status, cooldown state.State, rows
 			if rank(a) != rank(b) {
 				return rank(a) < rank(b)
 			}
-			if !a.Exhausted && a.Headroom != nil && b.Headroom != nil && *a.Headroom != *b.Headroom {
-				return *a.Headroom > *b.Headroom
-			}
 			if a.reset.IsZero() != b.reset.IsZero() {
 				return !a.reset.IsZero()
 			}
-			return a.reset.Before(b.reset)
+			if !a.reset.Equal(b.reset) {
+				return a.reset.Before(b.reset)
+			}
+			return rank(a) == 0 && *a.Headroom > *b.Headroom
 		})
 		if len(indexes) == 0 {
 			continue
@@ -111,12 +111,12 @@ func Pick(order []string, statuses []provider.Status, cooldown state.State, rows
 		if c.Headroom != nil {
 			reason = fmt.Sprintf("most headroom: weekly %s, 5h %s", pct(c.Weekly), pct(c.Five))
 		}
-		if c.Exhausted {
+		if c.Headroom != nil && *c.Headroom <= 0 {
 			reason = "all exhausted; reset unknown"
-			if !c.reset.IsZero() {
-				loc, _ := time.LoadLocation("Australia/Sydney")
-				reason = "soonest reset " + c.reset.In(loc).Format("15:04 MST")
-			}
+		}
+		if c.Headroom != nil && !c.reset.IsZero() {
+			loc, _ := time.LoadLocation("Australia/Sydney")
+			reason = "soonest reset " + c.reset.In(loc).Format("15:04 MST")
 		}
 		return c.account, reason, candidates
 	}

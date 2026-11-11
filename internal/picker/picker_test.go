@@ -24,8 +24,14 @@ func TestRanking(t *testing.T) {
 		{"binding max", usage.Row{WeeklyUsedPct: ptr(10.), FiveHourUsedPct: ptr(90.)}, usage.Row{WeeklyUsedPct: ptr(40.), FiveHourUsedPct: ptr(40.)}, "personal"},
 		{"exhausted sibling", usage.Row{WeeklyUsedPct: ptr(95.)}, usage.Row{WeeklyUsedPct: ptr(90.)}, "personal"},
 		{"known above unknown", usage.Row{}, usage.Row{WeeklyUsedPct: ptr(90.)}, "personal"},
-		{"unknown above exhausted", usage.Row{}, usage.Row{WeeklyUsedPct: ptr(95.)}, "work"},
-		{"all exhausted reset", usage.Row{WeeklyUsedPct: ptr(95.), WeeklyResetsAt: ptr(now.Add(time.Hour).Format(time.RFC3339)), FiveHourUsedPct: ptr(10.), FiveHourResetsAt: ptr(now.Format(time.RFC3339))}, usage.Row{FiveHourUsedPct: ptr(100.), FiveHourResetsAt: ptr(now.Add(time.Minute).Format(time.RFC3339))}, "personal"},
+		{"remaining above unknown", usage.Row{}, usage.Row{WeeklyUsedPct: ptr(95.)}, "personal"},
+		{"unknown above exhausted", usage.Row{}, usage.Row{WeeklyUsedPct: ptr(100.)}, "work"},
+		{"use before reset", usage.Row{WeeklyUsedPct: ptr(97.), WeeklyResetsAt: ptr(now.Add(time.Hour).Format(time.RFC3339))}, usage.Row{WeeklyUsedPct: ptr(12.), WeeklyResetsAt: ptr(now.Add(7 * 24 * time.Hour).Format(time.RFC3339))}, "work"},
+		{"equal headroom personal resets sooner", usage.Row{WeeklyUsedPct: ptr(40.), WeeklyResetsAt: ptr(now.Add(time.Hour).Format(time.RFC3339))}, usage.Row{WeeklyUsedPct: ptr(40.), WeeklyResetsAt: ptr(now.Add(time.Minute).Format(time.RFC3339))}, "personal"},
+		{"known reset first", usage.Row{WeeklyUsedPct: ptr(10.)}, usage.Row{WeeklyUsedPct: ptr(90.), WeeklyResetsAt: ptr(now.Add(time.Hour).Format(time.RFC3339))}, "personal"},
+		{"all exhausted reset", usage.Row{WeeklyUsedPct: ptr(95.), WeeklyResetsAt: ptr(now.Add(time.Hour).Format(time.RFC3339)), FiveHourUsedPct: ptr(10.), FiveHourResetsAt: ptr(now.Format(time.RFC3339))}, usage.Row{FiveHourUsedPct: ptr(100.), FiveHourResetsAt: ptr(now.Add(time.Minute).Format(time.RFC3339))}, "work"},
+		{"both fully used reset", usage.Row{WeeklyUsedPct: ptr(100.), WeeklyResetsAt: ptr(now.Add(time.Hour).Format(time.RFC3339)), FiveHourUsedPct: ptr(10.), FiveHourResetsAt: ptr(now.Format(time.RFC3339))}, usage.Row{FiveHourUsedPct: ptr(100.), FiveHourResetsAt: ptr(now.Add(time.Minute).Format(time.RFC3339))}, "personal"},
+		{"fully used missing reset last", usage.Row{WeeklyUsedPct: ptr(100.)}, usage.Row{FiveHourUsedPct: ptr(100.), FiveHourResetsAt: ptr(now.Add(time.Minute).Format(time.RFC3339))}, "personal"},
 		{"stable tie", usage.Row{WeeklyUsedPct: ptr(40.)}, usage.Row{WeeklyUsedPct: ptr(40.)}, "work"},
 	} {
 		t.Run(tc.name, func(t *testing.T) {

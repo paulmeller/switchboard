@@ -26,9 +26,13 @@ Do not install over existing launchers.
 ./build/sb schema --json
 ```
 
-Explicit `claude` and `codex` selections default to work and bypass status,
-routing, classifier and cooldowns. The optional work/personal selector is consumed;
-the separator `--` is removed and remaining argv is forwarded unchanged. Put sb
+Explicit `claude` and `codex` commands balance signed-in accounts outside cooldown
+within the named family using usage/reset ranking, without a classifier or family
+fallback. Only an explicit `--account tool/profile` flag or positional work/personal
+selector pins an account and bypasses status/usage/cooldown checks. The flag must
+match the named family; `SB_ACCOUNT` and TOML `pin` apply only to task routing.
+No eligible account in the named family exits 3. The optional work/personal
+selector and separator `--` are removed; remaining argv is forwarded unchanged. Put sb
 flags before explicit launcher commands; everything after the separator belongs to
 the tool. Claude maps CLAUDE_OAUTH_TOKEN_1 (work) or CLAUDE_OAUTH_TOKEN_2 (personal)
 to CLAUDE_CODE_OAUTH_TOKEN and removes ANTHROPIC_API_KEY. Missing mapped tokens
@@ -54,17 +58,20 @@ launch targets. Status login is eligibility, not a claim of usable credits.
 
 Within a family, binding used is the maximum known weekly/five-hour percentage;
 headroom is 100 minus binding used. Any window at or over `usage_exhausted_pct`
-(default 95, finite 0..100) exhausts an account. Known non-exhausted headroom ranks
-first, then unknown usage (both windows null), then exhausted accounts. Extra
-windows are not consulted in v0.1. All-exhausted families stay selected: choose the
-earliest reset among windows at/over the cap; missing resets rank last. Other ties
-use higher headroom, sooner relevant reset, then work before personal. Fall back
-to another family only when none is signed in outside cooldown; none anywhere
+(default 95, finite 0..100) sets the exhausted flag. Accounts with remaining quota
+(headroom > 0), including those over the cap, rank first; unknown usage (both
+windows null) ranks next, then fully used accounts (headroom <= 0). Prefer the
+soonest known reset among remaining-quota accounts, then higher headroom, then
+work before personal. Resets come only from windows at/over the cap when exhausted;
+otherwise use the earliest known reset. Fully used accounts prefer the soonest
+exhausting-window reset; missing resets rank last. Extra windows are not consulted
+in v0.1. Task routing falls back to another family only when none is signed in
+outside cooldown; none anywhere
 exits 3. Unknown stays unknown and never fails a pick solely for missing usage.
 
 `--account` > `SB_ACCOUNT` > TOML `pin` hard-pins an exact tool/profile, bypassing
 Jev and usage selection. A signed-out, unknown-login or cooldown pin exits 3;
-it never switches accounts. Explicit launcher commands retain their bypass.
+it never switches accounts. Explicit launcher pins use the bypass described above.
 Cooldown and pin values require full tool/profile; defaults/rules also accept
 bare launchable families. Flags > environment > config > built-in defaults.
 
@@ -155,7 +162,8 @@ nothing. Cooldown state contains no credential values or task text.
 
 ## Local decision log and calibration
 
-Routed tasks (`sb "<task>"`, `sb run`, `sb --dry-run`, and `sb classify`)
+Routed tasks, explicit `sb claude`/`sb codex` launches (including passthrough
+arguments), all dry-runs and `sb classify`
 append version 1 JSONL to `$XDG_DATA_HOME/switchboard/decisions.jsonl`, default
 `~/.local/share/switchboard/decisions.jsonl`. The switchboard directory is 0700;
 the live file and retained `decisions.jsonl.1` are 0600. Before an append would
@@ -165,20 +173,25 @@ a single oversized record can exceed the limit. Only these two generations are
 retained. Concurrent rotation is not coordinated between processes.
 
 `[log] enabled = true` and `redact_task = false` are the defaults. Unknown fields
-and invalid values fail config loading with exit 2. `--no-log` disables routing
+and invalid values fail config loading with exit 2. `--no-log` disables decision
 logging for that invocation. With `redact_task = true`, `task` is null and
 `task_sha256` contains the lowercase SHA-256 of the original task bytes; the hash
 is also present for unredacted tasks. Do not put secrets in task text. There are
 no key, environment, HTTP, Keychain, candidate or usage dumps in this log.
 
 Each decision includes a UUID `id`, Sydney RFC3339 timestamp with numeric offset,
-dry-run flag, selected family/account, source, nullable classification metrics,
-reason and nullable override. Dry-run/classify JSON includes `id` when appended.
+dry-run flag, `explicit_family` boolean, selected family/account, source, nullable
+classification metrics, reason and nullable override. Dry-run/classify JSON includes
+`id` when appended.
 Explicit account pins (`--account`, `SB_ACCOUNT`, TOML `pin`) include an override
 and an implicit `label` for that exact family/account. Defaults and rules never
-create implicit labels. Failed selection attempts can have empty family/account
-and no label. Explicit `sb claude`/`sb codex` launches are not logged. Status,
-doctor, usage, schema and cooldown never append decisions.
+create implicit labels. Explicit family launches set `explicit_family=true` and
+`source="rules"`; only their explicit flag/positional pins add an override and
+implicit label. Unpinned usage picks have no label. Routed/classify decisions set
+`explicit_family=false`; older records default to false. Explicit launch argv and
+environment are never logged: task is empty (null when redacted), with the hash of
+empty task bytes. Failed selection attempts can have empty family/account and no
+label. Status, doctor, usage, schema and cooldown never append decisions.
 
 Exec still replaces sb. Real launches are logged **before** exec and both
 `exit_code` and `duration_ms` are null, including when launch subsequently fails.

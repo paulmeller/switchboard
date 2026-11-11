@@ -35,6 +35,7 @@ type Record struct {
 type Decision struct {
 	Record
 	DryRun               bool      `json:"dry_run"`
+	ExplicitFamily       bool      `json:"explicit_family"`
 	Task                 *string   `json:"task"`
 	TaskSHA256           string    `json:"task_sha256"`
 	Source               string    `json:"source"`

@@ -9,7 +9,7 @@ Use Kong, `cmd/sb` and `internal/`, colocated tests, gofumpt/goimports. Data to 
 ## Existing launcher parity (read these files before implementing)
 `/workspace/dotfiles/bin/claude-as`, `/workspace/dotfiles/bin/codex-as`; `~/.local/bin/claude-as` points to the same launcher. They default to work when no profile is given, consume work/personal if present, forward all remaining argv unchanged, resolve the real executable on PATH, then exec.
 * `sb claude [work|personal] [-- args]`: work CLAUDE_OAUTH_TOKEN_1 or personal CLAUDE_OAUTH_TOKEN_2 maps to CLAUDE_CODE_OAUTH_TOKEN; ANTHROPIC_API_KEY must be absent. Missing token fails without printing it. Other env/argv preserved. On macOS ~/.zshrc exports these env vars from Keychain services claude-oauth-work / claude-oauth-personal; doctor may check presence but never output a value. No new direct secret extraction.
-* `sb codex [work|personal] [-- args]`: CODEX_HOME is ~/.codex or ~/.codex-personal, mkdir -p if needed, then syscall.Exec. Never inspect auth files. Note existing codex-as currently omits mkdir; this requested improvement is intentional. Explicit launcher selections bypass routing/status checks.
+* `sb codex [work|personal] [-- args]`: CODEX_HOME is ~/.codex or ~/.codex-personal, mkdir -p if needed, then syscall.Exec. Never inspect auth files. Note existing codex-as currently omits mkdir; this requested improvement is intentional. Explicit family commands balance within that family using status, cooldowns and usage, without a classifier or family fallback. Only an explicit --account tool/profile flag (validated to match the family) or positional work/personal selector pins and bypasses status/usage/cooldown checks. SB_ACCOUNT and TOML pin apply only to task routing.
 * Tests must inspect child argv/env using fake binaries/executor; only variable names or booleans in proof.
 
 ## Status and diagnostics
@@ -99,16 +99,19 @@ first, remaining families Claude then Codex. Jev returns a family and account_fl
 is its probability floor; difficulty confidence never blocks a passing family.
 
 Within each family use status-probe login (never usage login) and local cooldowns.
-Exclude unknown/signed-out login and cooldown. Rank known non-exhausted headroom,
-unknown usage, then exhausted accounts. Binding used is max(known weekly, five-hour);
+Exclude unknown/signed-out login and cooldown. Rank remaining quota (headroom > 0),
+unknown usage, then fully used accounts (headroom <= 0). Binding used is max(known weekly, five-hour);
 headroom is 100 minus binding used. Any known window >= usage_exhausted_pct
-(default 95, finite 0..100) exhausts it; ignore extra windows. All exhausted:
-choose earliest reset of exhausting windows, missing resets last. Other ties:
-higher headroom, sooner relevant reset, work before personal. Only fall back to
+(default 95, finite 0..100) sets the exhausted flag; ignore extra windows. Remaining
+quota ranks first even when over the cap: prefer the soonest known reset, then
+higher headroom, then work before personal. Exhausted accounts use only resets
+of exhausting windows; otherwise use the earliest known reset. Fully used accounts
+prefer the soonest exhausting-window reset, missing resets last. Only fall back to
 another family if none is signed in outside cooldown. No usable account exits 3.
 
 --account / SB_ACCOUNT / TOML pin are hard pins in that precedence: bypass Jev
-and usage selection, fail exit 3 if unavailable. Explicit launchers still bypass.
+and usage selection, fail exit 3 if unavailable. Explicit family commands only
+honor the CLI flag or positional profile as pins, as described above.
 Normalized quota cache: usage-cache.json beside cooldown state, atomic 0600 with
 0700 parent, no secrets/raw blobs/task text. usage_cache_ttl defaults to "60s",
 nonnegative duration. Fresh covered rows skip collectors. Fetch missing/expired
@@ -127,13 +130,14 @@ valid losing Jev numbers retained. README documents source limitations.
 
 ## Local decisions, feedback and tuning
 
-Routed tasks, including classify and routing dry-runs, append normalized v1 JSONL
+All launches, including explicit family commands with passthrough argv, plus
+classify and dry-runs, append normalized v1 JSONL
 at $XDG_DATA_HOME/switchboard/decisions.jsonl (default
 ~/.local/share/switchboard/decisions.jsonl). Directory 0700, live file 0600.
 [log] defaults: enabled=true, max_bytes=5242880, redact_task=false. max_bytes must
 be a positive integer; unknown fields/invalid values fail Load, exit 2. --no-log
-suppresses routing logging. No SB_NO_LOG override. Explicit tool launches,
-status, doctor, usage, schema and cooldown never append decisions.
+suppresses decision logging. No SB_NO_LOG override. Status, doctor, usage, schema
+and cooldown never append decisions.
 
 Before an append exceeds max_bytes, rename live to decisions.jsonl.1, replacing
 the previous generation, then create live 0600. Both files remain 0600. Records
@@ -142,12 +146,15 @@ Concurrent rotation is not coordinated between processes. Append failures use a
 fixed stderr diagnostic and never change routing exit status.
 
 Decision fields: schema_version=1, type=decision, unique RFC4122 UUID id, ts in
-Australia/Sydney RFC3339 numeric offset (embedded tzdata), dry_run, task,
+Australia/Sydney RFC3339 numeric offset (embedded tzdata), dry_run, explicit_family, task,
 task_sha256, family, source (jev/rules), probability, confidence, difficulty,
 difficulty_confidence, account, reason, override, exit_code, duration_ms.
 Metrics are nullable as in classify. SHA-256 is lowercase hex of raw task bytes,
 always present; redaction makes task null. override is null or {account,pin:true}.
-No keys, environment, tokens, raw HTTP/Keychain, candidates or usage rows.
+explicit_family is always present: true for sb claude/codex, false for run/classify;
+old records unmarshal as false. Explicit family launches use source="rules".
+No argv, keys, environment, tokens, raw HTTP/Keychain, candidates or usage rows.
+Explicit launches have an empty task (null when redacted) and hash empty task bytes.
 Failed selection attempts have empty family/account and no implicit label.
 Successful dry-run/classify JSON includes id only when the log append succeeded.
 
@@ -166,7 +173,8 @@ Feedback appends even with --no-log or [log] enabled=false if the target exists.
 Records include schema_version=1, type=feedback, own id/ts, decision_id, labelled
 family/account and ok boolean. Same rotation/permissions. Explicit --account,
 SB_ACCOUNT and TOML pin decisions contain an equivalent implicit label object
-for that exact family/account; defaults/rules do not imply labels.
+for that exact family/account on task routing; explicit family launches label only
+CLI --account or positional work/personal pins. Unpinned picks do not imply labels.
 
 sb tune reads only live and .1 local JSONL, never providers, classifier or usage.
 Missing files produce zeros/no recommendation. Join labels by decision id;
