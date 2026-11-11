@@ -43,6 +43,10 @@ func Load(path string) (State, error) {
 }
 func (s State) Eligible(a provider.Account, now time.Time) bool { return !s[a.ID()].After(now) }
 func Save(path string, s State) error {
+	return SaveJSON(path, s)
+}
+
+func SaveJSON(path string, value any) error {
 	dir := filepath.Dir(path)
 	if os.MkdirAll(dir, 0o700) != nil {
 		return errors.New("cannot create state directory")
@@ -55,7 +59,7 @@ func Save(path string, s State) error {
 		return errors.New("cannot stage state")
 	} // Failed temp files are retained rather than deleting existing files.
 	if e = f.Chmod(0o600); e == nil {
-		e = json.NewEncoder(f).Encode(s)
+		e = json.NewEncoder(f).Encode(value)
 	}
 	if e == nil {
 		e = f.Sync()

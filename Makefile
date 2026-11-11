@@ -1,7 +1,8 @@
 GOIMPORTS_VERSION := v0.38.0
 GOFUMPT_VERSION := v0.9.2
 TOOLS := $(CURDIR)/.tools
-export XDG_CACHE_HOME := $(TOOLS)/cache
+XDG_CACHE_HOME ?= $(TOOLS)/cache
+export XDG_CACHE_HOME
 
 .PHONY: deps tools fmt fmt-check vet test build ci darwin
 deps:

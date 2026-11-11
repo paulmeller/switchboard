@@ -11,21 +11,20 @@ import (
 	"time"
 
 	"switchboard/internal/config"
-	"switchboard/internal/provider"
 )
 
 const Model = "jev-1.14.0"
 
 type Classifier interface {
-	Choose(context.Context, string, []provider.Account, float64) Result
+	Choose(context.Context, string, []string, float64) Result
 }
 type Result struct {
-	Account              provider.Account `json:"-"`
-	Probability          *float64         `json:"probability"`
-	Confidence           *float64         `json:"confidence"`
-	Difficulty           *float64         `json:"difficulty"`
-	DifficultyConfidence *float64         `json:"difficulty_confidence"`
-	OK                   bool             `json:"-"`
+	Family               string   `json:"family"`
+	Probability          *float64 `json:"probability"`
+	Confidence           *float64 `json:"confidence"`
+	Difficulty           *float64 `json:"difficulty"`
+	DifficultyConfidence *float64 `json:"difficulty_confidence"`
+	OK                   bool     `json:"-"`
 }
 
 type Jev struct {
@@ -44,7 +43,7 @@ type answer struct {
 	Legend        map[string]json.RawMessage `json:"legend"`
 }
 
-func (j Jev) Choose(ctx context.Context, task string, eligible []provider.Account, floor float64) Result {
+func (j Jev) Choose(ctx context.Context, task string, eligible []string, floor float64) Result {
 	none := Result{}
 	if j.Key == "" || len(eligible) == 0 {
 		return none
@@ -61,9 +60,9 @@ func (j Jev) Choose(ctx context.Context, task string, eligible []provider.Accoun
 		defaults = config.DefaultCriteria()
 	}
 	for _, a := range eligible {
-		criteria[a.ID()] = defaults[a.ID()]
+		criteria[a] = defaults[a]
 	}
-	body := map[string]any{"model": model, "state": task, "questions": map[string]any{"account": map[string]any{"type": "choice", "instructions": "Select a coding account for this task", "criteria": criteria}, "difficulty": map[string]any{"type": "score", "instructions": "Rate coding difficulty", "criteria": []map[string]any{
+	body := map[string]any{"model": model, "state": task, "questions": map[string]any{"account": map[string]any{"type": "choice", "instructions": "Select a tool family for this task", "criteria": criteria}, "difficulty": map[string]any{"type": "score", "instructions": "Rate coding difficulty", "criteria": []map[string]any{
 		{"what": "Small local change a competent engineer can finish quickly", "examples": []string{"typo in README", "rename a variable", "obvious off-by-one"}},
 		{"what": "Feature, bug or refactor with clear scope requiring judgment", "examples": []string{"fix a flaky test", "add a CLI command", "refactor a scraper module"}},
 		{"what": "Open-ended design, architecture or cross-system high-risk change", "examples": []string{"design a multi-tenant auth model", "plan a data migration", "choose a storage architecture"}},
@@ -118,9 +117,9 @@ func (j Jev) Choose(ctx context.Context, task string, eligible []provider.Accoun
 	}
 
 	for _, candidate := range eligible {
-		if candidate.ID() == a.Choice {
+		if candidate == a.Choice {
 			p := a.Probabilities[a.Choice]
-			return Result{Account: candidate, Probability: &p, Confidence: a.Confidence, Difficulty: s.Score, DifficultyConfidence: s.Confidence, OK: true}
+			return Result{Family: candidate, Probability: &p, Confidence: a.Confidence, Difficulty: s.Score, DifficultyConfidence: s.Confidence, OK: true}
 		}
 	}
 	return none

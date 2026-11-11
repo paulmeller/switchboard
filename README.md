@@ -41,20 +41,47 @@ exported variable presence, Codex directories, and on macOS Keychain service
 presence using `security find-generic-password -s` without password flags. All
 Keychain output is discarded. It does not install software, sign in, or repair anything.
 
-Routing uses the first case-insensitive substring rule, then the configured
-default; if that account is ineligible it tries the remaining built-in accounts in
-Claude work, Claude personal, Codex work, Codex personal order. Only positively
-signed-in accounts outside cooldown are eligible. A dry run checks status but
-never launches, creates a home or writes state. With a configured classifier key,
-it sends task text to Jev and prints the pick, reason and confidence.
+Routing chooses a **family** first, then an account within that family. Rules use
+first case-insensitive substring match, then `default` (built-in `codex/work`).
+Both `default = "codex"` and legacy `default = "codex/work"` are valid; profiles
+in defaults and rules are ignored. Remaining families follow stable Claude, Codex
+order. Only positively signed-in accounts outside local cooldown enter selection.
+Jev sees unique available launchable families, never profiles; AGY/Grok are not
+launch targets. Status login is eligibility, not a claim of usable credits.
+
+Within a family, binding used is the maximum known weekly/five-hour percentage;
+headroom is 100 minus binding used. Any window at or over `usage_exhausted_pct`
+(default 95, finite 0..100) exhausts an account. Known non-exhausted headroom ranks
+first, then unknown usage (both windows null), then exhausted accounts. Extra
+windows are not consulted in v0.1. All-exhausted families stay selected: choose the
+earliest reset among windows at/over the cap; missing resets rank last. Other ties
+use higher headroom, sooner relevant reset, then work before personal. Fall back
+to another family only when none is signed in outside cooldown; none anywhere
+exits 3. Unknown stays unknown and never fails a pick solely for missing usage.
+
+`--account` > `SB_ACCOUNT` > TOML `pin` hard-pins an exact tool/profile, bypassing
+Jev and usage selection. A signed-out, unknown-login or cooldown pin exits 3;
+it never switches accounts. Explicit launcher commands retain their bypass.
+Cooldown and pin values require full tool/profile; defaults/rules also accept
+bare launchable families. Flags > environment > config > built-in defaults.
 
 Copy `config.example.toml` manually to
 $XDG_CONFIG_HOME/switchboard/config.toml (default ~/.config/switchboard/config.toml).
-Supported overrides: `--config` > SB_CONFIG > default config path; `--account` >
-SB_ACCOUNT > TOML `default` > codex/work. TOML also supports `account_floor` and `difficulty_floor` (finite 0..1, both default 0.5), plus legacy `confidence` (0..1)
-and ordered `[[rules]]` containing `contains` and `account`. Account values are
-claude/work, claude/personal, codex/work, codex/personal. Invalid config fails
-before task launch. Unknown config keys are rejected.
+Unknown TOML keys fail. `account_floor` and `difficulty_floor` are finite 0..1,
+default 0.5; legacy `confidence` maps as described below.
+
+Routing reuses the read-only usage collectors for eligible launch profiles only,
+with a two-second timeout per row (up to eight seconds for four eligible rows).
+`sb usage` remains independent, eight rows, five seconds per row, without Jev.
+Normalized numeric windows/reset times are cached in
+$XDG_STATE_HOME/switchboard/usage-cache.json (default
+~/.local/state/switchboard/usage-cache.json), mode 0600, parent 0700, atomic writes.
+`usage_cache_ttl = "60s"` controls freshness (nonnegative duration). Fresh covered
+rows skip collectors; expired/missing rows fetch. Failed/timed-out fetches reuse
+entries no older than TTL plus five minutes, otherwise usage is unknown. Cache
+writes are best effort and contain no task text, identity, raw blobs or secrets.
+Dry-run/classify read the cache or fetch in memory and never write files, launch,
+create homes or write cooldowns. The usage command does not use this routing cache.
 
 The optional `[classifier]` table selects `provider = "typesafe"` (default),
 `"ai-gateway"`, or `"off"`. Omitted fields use these provider defaults:
@@ -84,13 +111,12 @@ cooldowns but never launches, creates homes or writes state. Status, doctor and
 usage never call Jev. Requests use the pinned provider models above and a
 three-second bound; model echoes accept equivalent short/prefixed IDs.
 
-Choice uses contrastive objects (`what`, `not_for`, `examples`) for eligible
-launch accounts only. Defaults distinguish company vs personal work and everyday
-Codex implementation vs Claude design, writing and harder reasoning. Edit fields
-with quoted TOML tables such as `[accounts."codex/work"]`; each provided field
-replaces its built-in value. Unknown account IDs are allowed for future use;
-AGY and Grok defaults are usage-only and never become routing options. Empty
-merged `what` and unknown fields are invalid.
+Choice uses contrastive family objects (`what`, `not_for`, `examples`). Codex
+covers implementation, tests, refactors and everyday coding; Claude covers design,
+architecture, writing and harder reasoning. Override fields with `[accounts.codex]`
+or `[accounts.claude]`; provided fields replace individual built-in fields.
+Unknown family IDs are accepted but have no effect until launchable. AGY/Grok
+criteria are placeholders only. Empty merged `what` and unknown fields fail.
 
 Score levels describe small local changes, scoped features/bugs/refactors, and
 open-ended architecture or cross-system high-risk changes, each with examples.
@@ -98,17 +124,19 @@ Difficulty only informs reporting; it never changes account selection.
 `probabilities[choice] >= account_floor` accepts an eligible Jev pick regardless
 of Choice confidence. Difficulty is shown only when its own confidence meets
 `difficulty_floor`; missing confidence leaves difficulty null. Invalid responses
-fall back to rules. Floors are TOML settings in v0.1. The new account default is
+fall back to rules. Floors are TOML settings in v0.1. The family probability default is
 0.5, replacing the old implicit 0.8. Explicit `account_floor` wins over legacy
 `confidence`; otherwise an explicitly supplied `confidence` maps to
 `account_floor`, including zero. Difficulty defaults independently to 0.5.
 
-Classify and routing dry-run JSON include tool, profile, reason, source, why,
+Classify and routing dry-run JSON include family, tool, profile, account reason, family source, why,
 probability, confidence, difficulty and difficulty_confidence. Rules have null
-account probability/confidence. A valid response also appears under `jev` with
+family probability/confidence. A valid response also appears under `jev` with
 raw normalized choice and numbers even when below the floor; no HTTP bodies or
-keys are exposed. Plain output is tab-separated pick, source, probability,
-reason, why. Tests use fake transports only; no live classification was performed.
+keys are exposed. `candidates` contains account ID, status login, cooldown, weekly/five-hour
+percentages/resets, exhausted, headroom and chosen. Usage login does not determine
+eligibility. Plain output is tab-separated pick, family, source, probability, confidence,
+reason, why, followed by candidate rows. Tests use fake transports only; no live classification was performed.
 See TypeSafe's [contrastive criteria cookbook](https://docs.typesafe.ai/concepts/how-to-build-with-system-one),
 [probability routing](https://docs.typesafe.ai/patterns/probability-routing) and
 [confidence routing](https://docs.typesafe.ai/patterns/confidence-routing).

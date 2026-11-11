@@ -9,6 +9,7 @@ import (
 	"path/filepath"
 	"regexp"
 	"strings"
+	"time"
 
 	"switchboard/internal/provider"
 
@@ -60,13 +61,16 @@ func (c *Classifier) Validate() error {
 }
 
 type Config struct {
-	Classifier      Classifier          `toml:"classifier"`
-	Default         string              `toml:"default"`
-	Confidence      float64             `toml:"confidence"`
-	AccountFloor    float64             `toml:"account_floor"`
-	DifficultyFloor float64             `toml:"difficulty_floor"`
-	Accounts        map[string]Criteria `toml:"accounts"`
-	Rules           []Rule              `toml:"rules"`
+	Pin               string              `toml:"pin"`
+	UsageExhaustedPct float64             `toml:"usage_exhausted_pct"`
+	UsageCacheTTL     string              `toml:"usage_cache_ttl"`
+	Classifier        Classifier          `toml:"classifier"`
+	Default           string              `toml:"default"`
+	Confidence        float64             `toml:"confidence"`
+	AccountFloor      float64             `toml:"account_floor"`
+	DifficultyFloor   float64             `toml:"difficulty_floor"`
+	Accounts          map[string]Criteria `toml:"accounts"`
+	Rules             []Rule              `toml:"rules"`
 }
 
 func Path(home, xdg string) string {
@@ -86,7 +90,7 @@ func ParseAccount(s string) (provider.Account, error) {
 }
 
 func Load(path, envDefault, flagDefault string, overrides ...Classifier) (Config, error) {
-	c := Config{Default: "codex/work", AccountFloor: 0.5, DifficultyFloor: 0.5}
+	c := Config{Default: "codex/work", UsageExhaustedPct: 95, UsageCacheTTL: "60s", AccountFloor: 0.5, DifficultyFloor: 0.5}
 	b, e := os.ReadFile(path)
 	if e == nil {
 		if toml.NewDecoder(bytes.NewReader(b)).DisallowUnknownFields().Decode(&c) != nil {
@@ -106,10 +110,10 @@ func Load(path, envDefault, flagDefault string, overrides ...Classifier) (Config
 		return c, errors.New("cannot read config")
 	}
 	if envDefault != "" {
-		c.Default = envDefault
+		c.Pin = envDefault
 	}
 	if flagDefault != "" {
-		c.Default = flagDefault
+		c.Pin = flagDefault
 	}
 	for _, override := range overrides {
 		if override.Provider != "" {
@@ -125,13 +129,24 @@ func Load(path, envDefault, flagDefault string, overrides ...Classifier) (Config
 	if e = c.Classifier.Validate(); e != nil {
 		return c, e
 	}
-	if _, e = ParseAccount(c.Default); e != nil {
+	if _, e = Family(c.Default); e != nil {
 		return c, e
 	}
 	for _, floor := range []float64{c.AccountFloor, c.DifficultyFloor} {
 		if math.IsNaN(floor) || math.IsInf(floor, 0) || floor < 0 || floor > 1 {
 			return c, errors.New("floors must be 0..1")
 		}
+	}
+	if c.Pin != "" {
+		if _, e = ParseAccount(c.Pin); e != nil {
+			return c, e
+		}
+	}
+	if math.IsNaN(c.UsageExhaustedPct) || math.IsInf(c.UsageExhaustedPct, 0) || c.UsageExhaustedPct < 0 || c.UsageExhaustedPct > 100 {
+		return c, errors.New("usage_exhausted_pct must be 0..100")
+	}
+	if ttl, err := time.ParseDuration(c.UsageCacheTTL); err != nil || ttl < 0 {
+		return c, errors.New("invalid usage_cache_ttl")
 	}
 	defaults := DefaultCriteria()
 	var fields struct {
@@ -163,14 +178,14 @@ func Load(path, envDefault, flagDefault string, overrides ...Classifier) (Config
 		if strings.TrimSpace(r.Contains) == "" {
 			return c, errors.New("rule contains must not be empty")
 		}
-		if _, e = ParseAccount(r.Account); e != nil {
+		if _, e = Family(r.Account); e != nil {
 			return c, e
 		}
 	}
 	return c, nil
 }
 
-func (c Config) Order(task string) ([]provider.Account, string) {
+func (c Config) Order(task string) ([]string, string) {
 	target := c.Default
 	reason := "configured default"
 	for _, r := range c.Rules {
@@ -180,12 +195,20 @@ func (c Config) Order(task string) ([]provider.Account, string) {
 			break
 		}
 	}
-	a, _ := ParseAccount(target)
-	out := []provider.Account{a}
+	a, _ := Family(target)
+	out := []string{a}
 	for _, other := range provider.Accounts() {
-		if other != a {
-			out = append(out, other)
+		if other.Tool != a && (len(out) == 1 || out[len(out)-1] != other.Tool) {
+			out = append(out, other.Tool)
 		}
 	}
 	return out, reason
+}
+
+func Family(s string) (string, error) {
+	if s == "claude" || s == "codex" {
+		return s, nil
+	}
+	a, err := ParseAccount(s)
+	return a.Tool, err
 }

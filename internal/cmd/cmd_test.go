@@ -67,7 +67,7 @@ func TestLauncherArgvAndModes(t *testing.T) {
 	var out, diag bytes.Buffer
 	calls := 0
 	p := &fakeProbe{signed: true}
-	a := App{Out: &out, Err: &diag, Home: t.TempDir(), Env: []string{"KEEP=yes"}, Probe: p, Execute: func(_ string, args, env []string) error {
+	a := App{Out: &out, Err: &diag, Home: t.TempDir(), UsageSource: usage.Unsupported{}, Env: []string{"KEEP=yes"}, Probe: p, Execute: func(_ string, args, env []string) error {
 		calls++
 		if !reflect.DeepEqual(args, []string{"--version", "a,b", "space arg", "--help"}) {
 			t.Fatal("argv changed")
@@ -94,7 +94,7 @@ func TestDryCooldownAndFallback(t *testing.T) {
 	var out, diag bytes.Buffer
 	home := t.TempDir()
 	p := &fakeProbe{signed: true}
-	a := App{Out: &out, Err: &diag, Home: home, Probe: p}
+	a := App{Out: &out, Err: &diag, Home: home, UsageSource: usage.Unsupported{}, Probe: p}
 	if a.Run([]string{"--dry-run", "cooldown", "codex/work"}) != 0 {
 		t.Fatal("dry cooldown")
 	}
@@ -111,24 +111,24 @@ func TestDryCooldownAndFallback(t *testing.T) {
 	}
 	var v map[string]any
 	json.Unmarshal(out.Bytes(), &v)
-	if v["tool"] != "claude" || v["profile"] != "work" || v["reason"] != "first eligible fallback" {
+	if v["tool"] != "codex" || v["profile"] != "personal" {
 		t.Fatal("wrong fallback")
 	}
 }
 
 type forbiddenClassifier struct{ t *testing.T }
 
-func (f forbiddenClassifier) Choose(context.Context, string, []provider.Account, float64) classifier.Result {
+func (f forbiddenClassifier) Choose(context.Context, string, []string, float64) classifier.Result {
 	f.t.Fatal("usage invoked classifier")
 	return classifier.Result{}
 }
 
 type fakeClassifier struct{ calls int }
 
-func (f *fakeClassifier) Choose(context.Context, string, []provider.Account, float64) classifier.Result {
+func (f *fakeClassifier) Choose(context.Context, string, []string, float64) classifier.Result {
 	f.calls++
 	p := 0.95
-	return classifier.Result{Account: provider.Account{Tool: "codex", Profile: "work"}, Probability: &p, Confidence: &p, OK: true}
+	return classifier.Result{Family: "codex", Probability: &p, Confidence: &p, OK: true}
 }
 
 func TestRoutingDryRunClassifier(t *testing.T) {
@@ -142,7 +142,7 @@ func TestRoutingDryRunClassifier(t *testing.T) {
 		home := t.TempDir()
 		f := &fakeClassifier{}
 		a := App{
-			Out: &out, Err: &diag, Home: home, Probe: &fakeProbe{signed: true}, Classifier: f,
+			Out: &out, Err: &diag, Home: home, UsageSource: usage.Unsupported{}, Probe: &fakeProbe{signed: true}, Classifier: f,
 			Execute: func(string, []string, []string) error { t.Fatal("dry-run launched"); return nil },
 		}
 		if a.Run(args) != 0 || f.calls != 1 {
@@ -161,7 +161,7 @@ func TestRoutingDryRunClassifier(t *testing.T) {
 func TestClassifierOffAndOverrides(t *testing.T) {
 	var out, diag bytes.Buffer
 	f := &fakeClassifier{}
-	a := App{Out: &out, Err: &diag, Home: t.TempDir(), Env: []string{"SB_CLASSIFIER_PROVIDER=invalid"}, Probe: &fakeProbe{signed: true}, Classifier: f}
+	a := App{Out: &out, Err: &diag, Home: t.TempDir(), UsageSource: usage.Unsupported{}, Env: []string{"SB_CLASSIFIER_PROVIDER=invalid"}, Probe: &fakeProbe{signed: true}, Classifier: f}
 	if a.Run([]string{"--dry-run", "fake task"}) != 2 {
 		t.Fatal("invalid environment config")
 	}
@@ -177,7 +177,7 @@ func TestClassifierOffAndOverrides(t *testing.T) {
 func TestDoctorClassifier(t *testing.T) {
 	t.Setenv("PATH", t.TempDir())
 	var out, diag bytes.Buffer
-	a := App{Out: &out, Err: &diag, Home: t.TempDir(), Env: []string{"SB_CLASSIFIER_PROVIDER=off"}, Classifier: forbiddenClassifier{t}}
+	a := App{Out: &out, Err: &diag, Home: t.TempDir(), UsageSource: usage.Unsupported{}, Env: []string{"SB_CLASSIFIER_PROVIDER=off"}, Classifier: forbiddenClassifier{t}}
 	a.Run([]string{"doctor", "--json"})
 	if !bytes.Contains(out.Bytes(), []byte("classifier provider off")) || bytes.Contains(out.Bytes(), []byte("classifier key present")) {
 		t.Fatal("off doctor")
@@ -192,9 +192,9 @@ func TestDoctorClassifier(t *testing.T) {
 
 type calibrationClassifier struct{ probability float64 }
 
-func (f calibrationClassifier) Choose(context.Context, string, []provider.Account, float64) classifier.Result {
+func (f calibrationClassifier) Choose(context.Context, string, []string, float64) classifier.Result {
 	confidence, difficulty, dc := 0.3, 1.2, 0.2
-	return classifier.Result{Account: provider.Account{Tool: "claude", Profile: "personal"}, Probability: &f.probability, Confidence: &confidence, Difficulty: &difficulty, DifficultyConfidence: &dc, OK: true}
+	return classifier.Result{Family: "claude", Probability: &f.probability, Confidence: &confidence, Difficulty: &difficulty, DifficultyConfidence: &dc, OK: true}
 }
 
 func TestCalibrationProbabilityAndDifficulty(t *testing.T) {
@@ -202,7 +202,7 @@ func TestCalibrationProbabilityAndDifficulty(t *testing.T) {
 		for _, probability := range []float64{0.55, 0.4} {
 			var out, diag bytes.Buffer
 			home := t.TempDir()
-			a := App{Out: &out, Err: &diag, Home: home, Probe: &fakeProbe{signed: true}, Classifier: calibrationClassifier{probability}, Execute: func(string, []string, []string) error { t.Fatal("calibration launched"); return nil }}
+			a := App{Out: &out, Err: &diag, Home: home, UsageSource: usage.Unsupported{}, Probe: &fakeProbe{signed: true}, Classifier: calibrationClassifier{probability}, Execute: func(string, []string, []string) error { t.Fatal("calibration launched"); return nil }}
 			if a.Run([]string{command, "--dry-run", "--json", "fake task"}) != 0 {
 				t.Fatal("calibration failed")
 			}
@@ -221,6 +221,93 @@ func TestCalibrationProbabilityAndDifficulty(t *testing.T) {
 			if len(entries) != 0 {
 				t.Fatal("calibration wrote files")
 			}
+		}
+	}
+}
+
+type profileProbe struct{ signed map[string]bool }
+
+func (p profileProbe) Status(_ context.Context, a provider.Account) provider.Status {
+	v := p.signed[a.ID()]
+	return provider.Status{Account: a, LoginOK: &v}
+}
+
+type forbiddenUsage struct{ t *testing.T }
+
+func (f forbiddenUsage) Read(context.Context, string, string) (usage.Data, error) {
+	f.t.Fatal("pin collected usage")
+	return usage.Data{}, nil
+}
+
+func TestPins(t *testing.T) {
+	for _, mode := range []string{"flag", "env", "config"} {
+		for _, blocked := range []string{"", "signed-out", "cooldown"} {
+			t.Run(mode+blocked, func(t *testing.T) {
+				home := t.TempDir()
+				var out, diag bytes.Buffer
+				a := App{Out: &out, Err: &diag, Home: home, Probe: profileProbe{map[string]bool{"codex/personal": blocked != "signed-out", "claude/work": true}}, Classifier: forbiddenClassifier{t}, UsageSource: forbiddenUsage{t}}
+				args := []string{"classify", "--json", "fake task"}
+				switch mode {
+				case "flag":
+					args = append(args, "--account", "codex/personal")
+				case "env":
+					a.Env = []string{"SB_ACCOUNT=codex/personal"}
+				case "config":
+					path := filepath.Join(home, "config.toml")
+					os.WriteFile(path, []byte("pin='codex/personal'"), 0o600)
+					args = append(args, "--config", path)
+				}
+				if blocked == "cooldown" {
+					state.Save(state.Path(home, ""), state.State{"codex/personal": time.Now().Add(time.Hour)})
+				}
+				code := a.Run(args)
+				if blocked != "" {
+					if code != 3 {
+						t.Fatal(code)
+					}
+					return
+				}
+				if code != 0 {
+					t.Fatal(diag.String())
+				}
+				var r map[string]any
+				json.Unmarshal(out.Bytes(), &r)
+				if r["tool"] != "codex" || r["profile"] != "personal" {
+					t.Fatal("pin changed")
+				}
+			})
+		}
+	}
+}
+
+type headroomSource struct{}
+
+func (headroomSource) Read(_ context.Context, tool, profile string) (usage.Data, error) {
+	v := 80.
+	if profile == "personal" {
+		v = 20
+	}
+	return usage.Data{Source: "fake", ObservedAt: time.Now(), Weekly: &v}, nil
+}
+
+func TestDefaultFamilyAndStatusFallback(t *testing.T) {
+	for _, codex := range []bool{true, false} {
+		home := t.TempDir()
+		path := filepath.Join(home, "config.toml")
+		os.WriteFile(path, []byte("default='codex/work'\n[classifier]\nprovider='off'"), 0o600)
+		var out, diag bytes.Buffer
+		a := App{Out: &out, Err: &diag, Home: home, Probe: profileProbe{map[string]bool{"codex/work": codex, "codex/personal": codex, "claude/work": true}}, UsageSource: headroomSource{}, Classifier: forbiddenClassifier{t}}
+		if a.Run([]string{"--config", path, "classify", "--json", "fake task"}) != 0 {
+			t.Fatal(diag.String())
+		}
+		var r map[string]any
+		json.Unmarshal(out.Bytes(), &r)
+		if codex {
+			if r["tool"] != "codex" || r["profile"] != "personal" {
+				t.Fatal("default became pin")
+			}
+		} else if r["tool"] != "claude" {
+			t.Fatal("no family fallback")
 		}
 	}
 }

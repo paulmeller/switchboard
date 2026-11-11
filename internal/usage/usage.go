@@ -130,7 +130,11 @@ func sydneyReset(value *string) *string {
 }
 
 func Collect(ctx context.Context, source Source, timeout time.Duration, now time.Time) (Report, int) {
-	report := Report{1, sydneyTime(now), Defaults()}
+	return CollectRows(ctx, source, timeout, now, Defaults())
+}
+
+func CollectRows(ctx context.Context, source Source, timeout time.Duration, now time.Time, rows []Row) (Report, int) {
+	report := Report{1, sydneyTime(now), rows}
 	success := 0
 	for i := range report.Accounts {
 		r := &report.Accounts[i]

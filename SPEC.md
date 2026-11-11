@@ -42,18 +42,19 @@ without -w/-g); off needs no key. No automatic writes.
 POST `{base_url}/v1/systemone` after trimming trailing slashes, with
 Content-Type application/json, Bearer key, configured model and typed Choice/Score
 questions/answers. Three-second bound. No key => no HTTP call. Errors, wrong
-model, invalid response, ineligible choice or chosen account probability below account_floor
+model, invalid response, ineligible choice or chosen family probability below account_floor
 => deterministic rules. Accept the configured response model or its equivalent
 with/without the `typesafe-ai/` prefix. Never echo keys or raw responses.
 No Decision fallbacks, providerOptions or OpenAI response emulation.
 
-Choice criteria are contrastive objects with what, not_for and examples, merged
-from built-ins then per-field `[accounts."id"]` overrides. Unknown IDs are allowed,
-unknown fields are rejected, empty merged what is invalid. Only eligible launch
-accounts enter Choice; agy/grok defaults remain usage-only. Score uses three
-situation objects with examples: small local changes; scoped features, bugs and
-refactors; open-ended architecture/cross-system high-risk changes. Object legends
-are accepted; score remains 0..2 with a valid 0/1/2 probability distribution.
+Choice criteria are contrastive family objects, merged per-field from built-ins
+and `[accounts.codex]` / `[accounts.claude]`. Unknown family IDs are allowed but
+have no effect until launchable; unknown fields and empty merged what fail.
+Codex: implementation/tests/refactors/everyday coding; Claude: design,
+architecture/writing/harder reasoning. AGY/Grok are non-launchable placeholders.
+Only unique tools from signed-in, not-cooldown launch accounts enter Choice.
+Score uses three structured situation objects with examples, object legends,
+0..2 score and a valid 0/1/2 probability distribution.
 
 TOML account_floor and difficulty_floor are finite 0..1, defaulting independently
 to 0.5. Explicit account_floor wins; otherwise explicitly set legacy confidence
@@ -66,9 +67,9 @@ or below-floor confidence gives null difficulty. No difficulty routing rule.
 login and cooldown checks. Both send task text when provider is enabled and a
 key is resolved, but never launch, create homes or write state. JSON includes
 tool/profile/reason/source/why and nullable probability, confidence, difficulty,
-difficulty_confidence. Rules have null account metrics. Valid raw normalized Jev
+difficulty_confidence. Rules have null family metrics. Valid raw normalized Jev
 choice and metrics remain in a nested jev object even on probability fallback.
-Plain output: pick, source, probability, reason, why (tabs). Status, doctor and
+Plain output: pick, family, source, probability, confidence, reason, why (tabs), then candidate rows. Status, doctor and
 usage never call Jev. Tests use fake transports only.
 References: https://docs.typesafe.ai/concepts/how-to-build-with-system-one,
 https://docs.typesafe.ai/primitives/choice,
@@ -89,4 +90,35 @@ Read `/home/box/.local/bin/account-status` SOURCE ONLY as a map; NEVER RUN it. I
 ## Verification / delivery
 Tests cover argv/env parity, defaults, failures, output modes, usage-only command allowlist/no task execution, all-eight-row schema, timeout/partial/all-failure, cached-only provenance, no secret reflection, routing precedence/eligibility, cooldowns and fake Jev. Run make ci, build Linux, cross-compile `GOOS=darwin GOARCH=arm64 go build ./cmd/sb`. Live coordinator checks: four-account status (report failures honestly), codex personal -- --version and -- login status; claude work -- --version; dry-run task pick+reason; sb usage --json validated via jq; exact-value and pattern secret scan of all captured outputs, never print matching secret. No inference in verification.
 
-Later work only: quota-aware routing, sticky sessions, automatic cooldown discovery where safe, CC-Router-inspired quota controls. No proxy.
+Later work only: sticky sessions, automatic cooldown discovery where safe, CC-Router-inspired quota controls. No proxy.
+
+## Family and account selection update
+Rules/defaults prefer families, ignoring legacy profile suffixes. Bare claude/codex
+are also accepted; cooldowns and pins require full tool/profile. Preferred family
+first, remaining families Claude then Codex. Jev returns a family and account_floor
+is its probability floor; difficulty confidence never blocks a passing family.
+
+Within each family use status-probe login (never usage login) and local cooldowns.
+Exclude unknown/signed-out login and cooldown. Rank known non-exhausted headroom,
+unknown usage, then exhausted accounts. Binding used is max(known weekly, five-hour);
+headroom is 100 minus binding used. Any known window >= usage_exhausted_pct
+(default 95, finite 0..100) exhausts it; ignore extra windows. All exhausted:
+choose earliest reset of exhausting windows, missing resets last. Other ties:
+higher headroom, sooner relevant reset, work before personal. Only fall back to
+another family if none is signed in outside cooldown. No usable account exits 3.
+
+--account / SB_ACCOUNT / TOML pin are hard pins in that precedence: bypass Jev
+and usage selection, fail exit 3 if unavailable. Explicit launchers still bypass.
+Normalized quota cache: usage-cache.json beside cooldown state, atomic 0600 with
+0700 parent, no secrets/raw blobs/task text. usage_cache_ttl defaults to "60s",
+nonnegative duration. Fresh covered rows skip collectors. Fetch missing/expired
+eligible rows at two seconds per row; errors/timeouts reuse cache up to TTL+5m,
+otherwise null usage. Cache writes best effort on launch only. Dry-run/classify
+remain file-write-free; task text still goes to configured keyed classifiers.
+Usage stays isolated with eight rows and five seconds per row.
+
+Classify/dry-run include family/source/probability/confidence, final tool/profile,
+account reason, why and existing difficulty/raw Jev metrics. candidates includes
+account ID, status login, cooldown, numeric windows/resets, exhausted, headroom,
+chosen. Reset reasons use Australia/Sydney named zones. Rules metrics null;
+valid losing Jev numbers retained. README documents source limitations.

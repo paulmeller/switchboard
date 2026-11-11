@@ -6,9 +6,12 @@ import (
 	"io"
 	"os"
 	"os/exec"
+	"path/filepath"
 	"runtime"
 	"strings"
 	"time"
+
+	"switchboard/internal/picker"
 
 	"switchboard/internal/classifier"
 	"switchboard/internal/config"
@@ -35,7 +38,7 @@ type CLI struct {
 	DryRun             bool     `help:"Read-only selection; do not launch or write."`
 	Version            bool     `help:"Print version."`
 	Config             string   `help:"Config TOML path." env:"SB_CONFIG"`
-	Account            string   `help:"Routing default tool/profile." env:"SB_ACCOUNT"`
+	Account            string   `help:"Hard pin tool/profile; skip classifier and usage selection." env:"SB_ACCOUNT"`
 	Claude             Launch   `cmd:"" passthrough:"" help:"Exec genuine Claude (default: work)."`
 	Codex              Launch   `cmd:"" passthrough:"" help:"Exec genuine Codex (default: work)."`
 	Status             struct{} `cmd:"" help:"Check four login states, not credits."`
@@ -180,7 +183,7 @@ parsedVersion:
 	name := base[0]
 	background := context.Background()
 	if name == "schema" {
-		return a.emit(c, map[string]any{"schema_version": 1, "commands": schemaNode(p.Model.Node), "exit_codes": map[string]int{"success": 0, "failure": 1, "invalid_input": 2, "no_eligible_account": 3}, "classification_contract": map[string]string{"source": "jev|rules", "probability": "chosen account probability|null", "confidence": "Choice confidence|null", "difficulty": "0..2 when independently confident|null", "difficulty_confidence": "0..1|null", "jev": "raw normalized classification when valid", "why": "safe decision explanation"}, "usage_schema_version": 1, "usage_tool": "extensible string", "usage_contract": map[string]any{
+		return a.emit(c, map[string]any{"schema_version": 1, "commands": schemaNode(p.Model.Node), "exit_codes": map[string]int{"success": 0, "failure": 1, "invalid_input": 2, "no_eligible_account": 3}, "classification_contract": map[string]string{"family": "launchable tool family", "candidates": "normalized status, cooldown and usage account candidates", "reason": "account selection explanation", "source": "jev|rules", "probability": "chosen family probability|null", "confidence": "Choice confidence|null", "difficulty": "0..2 when independently confident|null", "difficulty_confidence": "0..1|null", "jev": "raw normalized classification when valid", "why": "safe decision explanation"}, "usage_schema_version": 1, "usage_tool": "extensible string", "usage_contract": map[string]any{
 			"schema_version": 1, "row_count": 8, "checked_at": "RFC3339 Australia/Sydney",
 			"entry_keys": map[string]string{"tool": "extensible string", "profile": "string", "account": "string|null", "plan": "configured string|null", "login_ok": "boolean|null", "weekly_used_pct": "number 0..100|null", "weekly_resets_at": "RFC3339|null", "five_hour_used_pct": "number 0..100|null", "five_hour_resets_at": "RFC3339|null", "extra": "object", "source": "string|null", "error": "safe string|null"}, "sources": "live read-only Codex RPC, Claude login, Grok usage; unsupported quotas null", "all_source_failure_exit": 1, "partial_success_exit": 0,
 		}, "precedence": []string{"flags", "environment", "config", "defaults"}}, []string{"sb schema --json"})
@@ -329,26 +332,27 @@ parsedVersion:
 	if e != nil {
 		return a.fail(2, e.Error())
 	}
-	order, reason := conf.Order(c.Run.Task)
-	eligible := []provider.Account{}
+	order, _ := conf.Order(c.Run.Task)
 	statuses := a.statuses(background)
-	for _, candidate := range order {
+	eligible := []string{}
+	now := time.Now()
+	for _, family := range order {
 		for _, r := range statuses {
-			if r.Account == candidate && r.LoginOK != nil && *r.LoginOK && s.Eligible(candidate, time.Now()) {
-				eligible = append(eligible, candidate)
+			if r.Tool == family && r.LoginOK != nil && *r.LoginOK && s.Eligible(r.Account, now) {
+				eligible = append(eligible, family)
+				break
 			}
 		}
 	}
 	if len(eligible) == 0 {
 		return a.fail(3, "no eligible signed-in account; check sb status and local cooldowns")
 	}
-	pick := (classifier.Rules{Config: conf}).Choose(background, c.Run.Task, eligible, conf.AccountFloor).Account
-	if pick != order[0] {
-		reason = "first eligible fallback"
-	}
+	family := eligible[0]
+	reason := ""
+	pick := provider.Account{}
 	source, why := "rules", "rules: classifier off"
 	var raw classifier.Result
-	if conf.Classifier.Provider != "off" {
+	if conf.Pin == "" && conf.Classifier.Provider != "off" {
 		classify := a.Classifier
 		why = "rules: no key"
 		if classify == nil {
@@ -361,11 +365,11 @@ parsedVersion:
 			raw = classify.Choose(background, c.Run.Task, eligible, conf.AccountFloor)
 			why = "rules: invalid classifier response"
 			if raw.OK && raw.Probability != nil && *raw.Probability >= 0 && *raw.Probability <= 1 {
-				why = "rules: account probability below floor"
+				why = "rules: family probability below floor"
 				if *raw.Probability >= conf.AccountFloor {
 					for _, candidate := range eligible {
-						if candidate == raw.Account {
-							pick = candidate
+						if candidate == raw.Family {
+							family = candidate
 							reason = "Jev classification"
 							source = "jev"
 							why = reason
@@ -375,6 +379,51 @@ parsedVersion:
 				}
 			}
 		}
+	}
+	candidates := []picker.Candidate{}
+	if conf.Pin != "" {
+		pick, _ = config.ParseAccount(conf.Pin)
+		usable := false
+		for _, r := range statuses {
+			if r.Account == pick && r.LoginOK != nil && *r.LoginOK && s.Eligible(pick, now) {
+				usable = true
+			}
+		}
+		if !usable {
+			return a.fail(3, "pinned account signed out, unknown login or in cooldown")
+		}
+		for _, r := range statuses {
+			if r.Account == pick {
+				candidates = append(candidates, picker.Candidate{Account: pick.ID(), Login: r.LoginOK, Chosen: true})
+			}
+		}
+		family, source, why, reason = pick.Tool, "rules", "explicit account pin", "pinned account; usage selection bypassed"
+	} else {
+		familyOrder := []string{family}
+		for _, f := range order {
+			if f != family {
+				familyOrder = append(familyOrder, f)
+			}
+		}
+		needed := []usage.Row{}
+		for _, r := range usage.Defaults() {
+			for _, st := range statuses {
+				if st.Tool == r.Tool && st.Profile == r.Profile && st.LoginOK != nil && *st.LoginOK && s.Eligible(st.Account, now) {
+					needed = append(needed, r)
+				}
+			}
+		}
+		src := a.UsageSource
+		if src == nil {
+			src = usage.Live(a.Home, a.Env)
+		}
+		ttl, _ := time.ParseDuration(conf.UsageCacheTTL)
+		rows := picker.Cached(background, src, filepath.Join(filepath.Dir(statePath), "usage-cache.json"), needed, ttl, 2*time.Second, now, !c.DryRun)
+		pick, reason, candidates = picker.Pick(familyOrder, statuses, s, rows, conf.UsageExhaustedPct, now)
+		if !pick.Valid() {
+			return a.fail(3, "no eligible signed-in account; check sb status and local cooldowns")
+		}
+		family = pick.Tool
 	}
 	var probability, confidence, difficulty, difficultyConfidence *float64
 	if raw.OK {
@@ -386,18 +435,36 @@ parsedVersion:
 			difficulty = raw.Difficulty
 		}
 	}
-	result := map[string]any{"tool": pick.Tool, "profile": pick.Profile, "reason": reason, "source": source, "why": why, "probability": probability, "confidence": confidence, "difficulty": difficulty, "difficulty_confidence": difficultyConfidence}
+	result := map[string]any{"family": family, "candidates": candidates, "tool": pick.Tool, "profile": pick.Profile, "reason": reason, "source": source, "why": why, "probability": probability, "confidence": confidence, "difficulty": difficulty, "difficulty_confidence": difficultyConfidence}
 	if raw.OK {
-		result["jev"] = map[string]any{"choice": raw.Account.ID(), "probability": raw.Probability, "confidence": raw.Confidence, "difficulty": raw.Difficulty, "difficulty_confidence": raw.DifficultyConfidence}
+		result["jev"] = map[string]any{"choice": raw.Family, "probability": raw.Probability, "confidence": raw.Confidence, "difficulty": raw.Difficulty, "difficulty_confidence": raw.DifficultyConfidence}
 	}
 	probabilityText := "null"
 	if probability != nil {
 		probabilityText = fmt.Sprintf("%g", *probability)
 	}
-	line := pick.ID() + "\t" + source + "\t" + probabilityText + "\t" + reason + "\t" + why
+	confidenceText := "null"
+	if confidence != nil {
+		confidenceText = fmt.Sprintf("%g", *confidence)
+	}
+	line := pick.ID() + "\t" + family + "\t" + source + "\t" + probabilityText + "\t" + confidenceText + "\t" + reason + "\t" + why
 
 	if c.DryRun {
-		return a.emit(c, result, []string{line})
+		lines := []string{line}
+		for _, v := range candidates {
+			login := "unknown"
+			if v.Login != nil {
+				login = fmt.Sprint(*v.Login)
+			}
+			reset := func(v *string) string {
+				if v == nil {
+					return "null"
+				}
+				return *v
+			}
+			lines = append(lines, fmt.Sprintf("candidate\t%s\tlogin=%s\tcooldown=%t\tweekly=%s\tweekly_reset=%s\t5h=%s\t5h_reset=%s\texhausted=%t\theadroom=%s\tchosen=%t", v.Account, login, v.Cooldown, percent(v.Weekly), reset(v.WeeklyReset), percent(v.Five), reset(v.FiveReset), v.Exhausted, percent(v.Headroom), v.Chosen))
+		}
+		return a.emit(c, result, lines)
 	}
 	fmt.Fprintln(a.Err, "sb: "+line)
 	if e := provider.Launch(pick, []string{c.Run.Task}, a.Home, a.Env, false, a.Execute); e != nil {

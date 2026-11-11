@@ -9,7 +9,6 @@ import (
 	"testing"
 
 	"switchboard/internal/config"
-	"switchboard/internal/provider"
 )
 
 func TestJevWireAndFallback(t *testing.T) {
@@ -40,6 +39,9 @@ func TestJevWireAndFallback(t *testing.T) {
 						t.Error("typed questions")
 					}
 					criteria := questions["account"].(map[string]any)["criteria"].(map[string]any)
+					if len(criteria) != 2 || criteria["claude"] == nil || criteria["codex"] == nil {
+						t.Fatal("family options")
+					}
 					for _, value := range criteria {
 						option := value.(map[string]any)
 						if option["what"] == "" || option["not_for"] == "" || option["examples"] == nil {
@@ -47,10 +49,10 @@ func TestJevWireAndFallback(t *testing.T) {
 						}
 					}
 					encoded, _ := json.Marshal(criteria)
-					if criteria["codex/work"].(map[string]any)["what"] != "Custom implementation" {
+					if criteria["codex"].(map[string]any)["what"] != "Custom implementation" {
 						t.Fatal("override missing on wire")
 					}
-					if strings.Contains(string(encoded), "Coding account") {
+					if strings.Contains(string(encoded), "Coding account") || strings.Contains(string(encoded), "Five V") || strings.Contains(string(encoded), "BorderProof") || strings.Contains(string(encoded), "/work") || strings.Contains(string(encoded), "personal") {
 						t.Fatal("generic criteria")
 					}
 					for _, value := range questions["difficulty"].(map[string]any)["criteria"].([]any) {
@@ -76,7 +78,7 @@ func TestJevWireAndFallback(t *testing.T) {
 						}
 					}
 					confidence := 0.95
-					choice := "codex/work"
+					choice := "codex"
 					if mode == "wrong-model" {
 						model = "other"
 					}
@@ -84,9 +86,9 @@ func TestJevWireAndFallback(t *testing.T) {
 						confidence = 0.2
 					}
 					if mode == "ineligible" {
-						choice = "claude/personal"
+						choice = "agy"
 					}
-					probs := map[string]float64{"codex/work": 1}
+					probs := map[string]float64{"codex": .8, "claude": .2}
 					if mode == "missing-probabilities" {
 						probs = nil
 					}
@@ -98,11 +100,11 @@ func TestJevWireAndFallback(t *testing.T) {
 					return rec.Result(), nil
 				})}
 				criteria := config.DefaultCriteria()
-				custom := criteria["codex/work"]
+				custom := criteria["codex"]
 				custom.What = "Custom implementation"
-				criteria["codex/work"] = custom
+				criteria["codex"] = custom
 				j := Jev{Criteria: criteria, Client: client, Endpoint: conf.BaseURL + "/v1/systemone", Model: conf.Model}
-				eligible := []provider.Account{{Tool: "codex", Profile: "work"}}
+				eligible := []string{"codex", "claude"}
 				if result := j.Choose(context.Background(), "fake task", eligible, 0.8); result.OK || calls != 0 {
 					t.Fatal("no-key call")
 				}

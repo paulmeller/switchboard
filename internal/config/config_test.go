@@ -10,11 +10,11 @@ func TestPrecedenceAndRules(t *testing.T) {
 	p := filepath.Join(t.TempDir(), "config.toml")
 	os.WriteFile(p, []byte("default = \"claude/work\"\n[[rules]]\ncontains = \"test\"\naccount = \"codex/personal\"\n"), 0o600)
 	c, e := Load(p, "codex/work", "claude/personal")
-	if e != nil || c.Default != "claude/personal" {
+	if e != nil || c.Pin != "claude/personal" {
 		t.Fatal("precedence")
 	}
 	order, reason := c.Order("TEST fake")
-	if order[0].ID() != "codex/personal" || reason != "first matching rule" {
+	if order[0] != "codex" || reason != "first matching rule" {
 		t.Fatal("rule")
 	}
 	os.WriteFile(p, []byte("unknown = true\n"), 0o600)
@@ -68,8 +68,15 @@ func TestFloorsAndCriteria(t *testing.T) {
 		{"confidence=0.8", .8, false},
 		{"confidence=0.8\naccount_floor=0", 0, false},
 		{"difficulty_floor=inf", .5, true},
+		{"usage_exhausted_pct=nan", .5, true},
+		{"usage_exhausted_pct=101", .5, true},
+		{"usage_cache_ttl='-1s'", .5, true},
+		{"usage_cache_ttl='bad'", .5, true},
+		{"usage_exhausted_pct=0\nusage_cache_ttl='0s'", .5, false},
+		{"pin='codex'", .5, true},
+		{"default='codex'", .5, false},
 		{"[accounts.\"future/id\"]\nwhat='Future tool'", .5, false},
-		{"[accounts.\"codex/work\"]\nwhat=''", .5, true},
+		{"[accounts.\"codex\"]\nwhat=''", .5, true},
 		{"[accounts.agy]\nunknown=true", .5, true},
 	} {
 		p := filepath.Join(t.TempDir(), "config.toml")
@@ -86,9 +93,9 @@ func TestFloorsAndCriteria(t *testing.T) {
 		}
 	}
 	p := filepath.Join(t.TempDir(), "config.toml")
-	os.WriteFile(p, []byte("[accounts.\"codex/work\"]\nwhat='Custom implementation'\nexamples=[]"), 0o600)
+	os.WriteFile(p, []byte("[accounts.\"codex\"]\nwhat='Custom implementation'\nexamples=[]"), 0o600)
 	c, err := Load(p, "", "")
-	if err != nil || c.Accounts["codex/work"].What != "Custom implementation" || c.Accounts["codex/work"].NotFor == "" || len(c.Accounts["codex/work"].Examples) != 0 {
+	if err != nil || c.Accounts["codex"].What != "Custom implementation" || c.Accounts["codex"].NotFor == "" || len(c.Accounts["codex"].Examples) != 0 {
 		t.Fatal("field merge")
 	}
 }
