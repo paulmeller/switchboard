@@ -1,0 +1,11 @@
+# Built-in accounts: claude/work, claude/personal, codex/work, codex/personal
+default = "codex/work"
+confidence = 0.8
+
+[[rules]]
+contains = "design"
+account = "claude/work"
+
+[[rules]]
+contains = "personal"
+account = "codex/personal"

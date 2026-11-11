@@ -1,0 +1,381 @@
+package cmd
+
+import (
+	"context"
+	"fmt"
+	"io"
+	"os"
+	"os/exec"
+	"runtime"
+	"strings"
+	"time"
+
+	"switchboard/internal/classifier"
+	"switchboard/internal/config"
+	"switchboard/internal/output"
+	"switchboard/internal/provider"
+	"switchboard/internal/state"
+	"switchboard/internal/usage"
+
+	"github.com/alecthomas/kong"
+)
+
+const Version = "0.1.0"
+
+type Launch struct {
+	Args []string `arg:"" optional:"" sep:"none" help:"Optional work/personal, then tool arguments (use --)."`
+}
+type CLI struct {
+	JSON    bool     `help:"Emit one JSON document."`
+	Plain   bool     `help:"Stable tab-separated output."`
+	NoInput bool     `help:"Never prompt (sb never prompts)."`
+	DryRun  bool     `help:"Read-only selection; do not launch or write."`
+	Version bool     `help:"Print version."`
+	Config  string   `help:"Config TOML path." env:"SB_CONFIG"`
+	Account string   `help:"Routing default tool/profile." env:"SB_ACCOUNT"`
+	Claude  Launch   `cmd:"" passthrough:"" help:"Exec genuine Claude (default: work)."`
+	Codex   Launch   `cmd:"" passthrough:"" help:"Exec genuine Codex (default: work)."`
+	Status  struct{} `cmd:"" help:"Check four login states, not credits."`
+	Doctor  struct{} `cmd:"" help:"Check local prerequisites without changing them."`
+	Usage   struct{} `cmd:"" help:"Read safe live usage; unknown values remain null."`
+	Schema  struct{} `cmd:"" help:"Describe actual commands and output contracts."`
+	Run     struct {
+		Task string `arg:"" help:"Task prompt (quote as one argument)."`
+	} `cmd:"" help:"Route a task and exec the selected tool."`
+	Cooldown struct {
+		Account  string        `arg:"" help:"tool/profile"`
+		Duration time.Duration `help:"Local cooldown duration after a 429." default:"1h"`
+	} `cmd:"" help:"Explicitly report a local cooldown."`
+}
+type App struct {
+	Out, Err    io.Writer
+	Home        string
+	Env         []string
+	Probe       provider.Probe
+	Execute     provider.Executor
+	UsageSource usage.Source
+	Classifier  classifier.Classifier
+}
+
+func Main(args []string) int {
+	home, e := os.UserHomeDir()
+	if e != nil {
+		fmt.Fprintln(os.Stderr, "sb: cannot resolve home")
+		return 2
+	}
+	return (&App{Out: os.Stdout, Err: os.Stderr, Home: home, Env: os.Environ(), Execute: provider.Exec}).Run(args)
+}
+
+func (a *App) value(k string) string {
+	for _, v := range a.Env {
+		key, x, ok := strings.Cut(v, "=")
+		if ok && key == k {
+			return x
+		}
+	}
+	return ""
+}
+func (a *App) fail(code int, msg string) int { fmt.Fprintln(a.Err, "sb: "+msg); return code }
+func normalize(args []string) []string {
+	known := map[string]bool{"run": true, "status": true, "doctor": true, "usage": true, "schema": true, "claude": true, "codex": true, "cooldown": true}
+	for i := 0; i < len(args); i++ {
+		v := args[i]
+		if v == "--config" || v == "--account" {
+			i++
+			continue
+		}
+		if strings.HasPrefix(v, "-") {
+			continue
+		}
+		if !known[v] {
+			out := append([]string{}, args[:i]...)
+			out = append(out, "run")
+			return append(out, args[i:]...)
+		}
+		break
+	}
+	return args
+}
+
+func (a *App) emit(c CLI, v any, lines []string) int {
+	if output.Write(a.Out, c.JSON, v, lines) != nil {
+		return a.fail(1, "cannot write output")
+	}
+	return 0
+}
+
+func (a *App) statuses(ctx context.Context) []provider.Status {
+	p := a.Probe
+	if p == nil {
+		p = provider.Live{Home: a.Home, Env: a.Env}
+	}
+	out := []provider.Status{}
+	for _, account := range provider.Accounts() {
+		out = append(out, p.Status(ctx, account))
+	}
+	return out
+}
+
+type parserExit int
+
+func (a *App) Run(args []string) (code int) {
+	defer func() {
+		if v := recover(); v != nil {
+			if exit, ok := v.(parserExit); ok {
+				code = int(exit)
+			} else {
+				panic(v)
+			}
+		}
+	}()
+	// Version is usable without a command. Tool argv after a command is untouched.
+	versionOnly, jsonVersion, plainVersion := false, false, false
+	for _, arg := range args {
+		switch arg {
+		case "--version":
+			versionOnly = true
+		case "--json":
+			jsonVersion = true
+		case "--plain":
+			plainVersion = true
+		case "--no-input":
+		default:
+			versionOnly = false
+			goto parsedVersion
+		}
+	}
+parsedVersion:
+	if versionOnly {
+		if jsonVersion && plainVersion {
+			return a.fail(2, "choose --json or --plain")
+		}
+		return a.emit(CLI{JSON: jsonVersion}, map[string]string{"version": Version}, []string{Version})
+	}
+	var c CLI
+	p, e := kong.New(&c, kong.Name("sb"), kong.Description("Local CLI launcher. Examples: sb --dry-run 'fix tests'; sb codex personal -- --version"), kong.Writers(a.Out, a.Err), kong.Exit(func(code int) { panic(parserExit(code)) }))
+	if e != nil {
+		return a.fail(2, "cannot initialize commands")
+	}
+	ctx, e := p.Parse(normalize(args))
+	if e != nil {
+		return a.fail(2, "invalid arguments; use sb --help")
+	}
+	if c.Version {
+		return a.emit(c, map[string]string{"version": Version}, []string{Version})
+	}
+	if c.JSON && c.Plain {
+		return a.fail(2, "choose --json or --plain")
+	}
+	command := ctx.Command()
+	base := strings.Fields(command)
+	if len(base) == 0 {
+		return a.fail(2, "a command or task is required; use sb --help")
+	}
+	name := base[0]
+	background := context.Background()
+	if name == "schema" {
+		return a.emit(c, map[string]any{"schema_version": 1, "commands": schemaNode(p.Model.Node), "exit_codes": map[string]int{"success": 0, "failure": 1, "invalid_input": 2, "no_eligible_account": 3}, "usage_schema_version": 1, "usage_tool": "extensible string", "usage_contract": map[string]any{
+			"schema_version": 1, "row_count": 8, "checked_at": "RFC3339 Australia/Sydney",
+			"entry_keys": map[string]string{"tool": "extensible string", "profile": "string", "account": "string|null", "plan": "configured string|null", "login_ok": "boolean|null", "weekly_used_pct": "number 0..100|null", "weekly_resets_at": "RFC3339|null", "five_hour_used_pct": "number 0..100|null", "five_hour_resets_at": "RFC3339|null", "extra": "object", "source": "string|null", "error": "safe string|null"}, "sources": "live read-only Codex RPC, Claude login, Grok usage; unsupported quotas null", "all_source_failure_exit": 1, "partial_success_exit": 0,
+		}, "precedence": []string{"flags", "environment", "config", "defaults"}}, []string{"sb schema --json"})
+	}
+	if name == "usage" {
+		source := a.UsageSource
+		if source == nil {
+			source = usage.Live(a.Home, a.Env)
+		}
+		r, code := usage.Collect(background, source, 5*time.Second, time.Now())
+		lines := []string{"Usage (read-only sources; login is not a credit claim)"}
+		for _, v := range r.Accounts {
+			status := "available"
+			if v.Error != nil {
+				status = *v.Error
+			}
+			lines = append(lines, fmt.Sprintf("%s\t%s\tweekly=%s\tfive_hour=%s\t%s", v.Tool, v.Profile, percent(v.WeeklyUsedPct), percent(v.FiveHourUsedPct), status))
+		}
+		if e := a.emit(c, r, lines); e != 0 {
+			return e
+		}
+		return code
+	}
+	if name == "status" {
+		rows := a.statuses(background)
+		lines := []string{}
+		code := 0
+		for _, r := range rows {
+			s := "unknown"
+			if r.LoginOK != nil {
+				s = "signed-out"
+				if *r.LoginOK {
+					s = "signed-in"
+				}
+			}
+			if r.Error != nil {
+				code = 1
+			}
+			diagnostic := "-"
+			if r.Error != nil {
+				diagnostic = *r.Error
+			}
+			lines = append(lines, r.Tool+"\t"+r.Profile+"\t"+s+"\t"+diagnostic)
+		}
+		if e := a.emit(c, map[string]any{"accounts": rows, "notice": "Login status does not imply usable credits."}, lines); e != 0 {
+			return e
+		}
+		return code
+	}
+	if name == "doctor" {
+		checks := []map[string]any{}
+		lines := []string{}
+		code := 0
+		add := func(name string, ok bool, fix string) {
+			checks = append(checks, map[string]any{"check": name, "ok": ok, "fix": fix})
+			lines = append(lines, fmt.Sprintf("%s\t%t\t%s", name, ok, fix))
+			if !ok {
+				code = 1
+			}
+		}
+		for _, tool := range []string{"claude", "codex"} {
+			_, e := exec.LookPath(tool)
+			add(tool+" binary", e == nil, "Install genuine CLI and add it to PATH")
+		}
+		for _, key := range []string{"CLAUDE_OAUTH_TOKEN_1", "CLAUDE_OAUTH_TOKEN_2"} {
+			add(key+" present", a.value(key) != "", "Export profile variable through your existing shell/Keychain setup")
+		}
+		if runtime.GOOS == "darwin" {
+			for _, service := range []string{"claude-oauth-work", "claude-oauth-personal"} {
+				add(service+" Keychain present", keychainPresent(service), "Use your existing Keychain setup; export the profile variable in your shell")
+			}
+		}
+		for _, profile := range []string{"work", "personal"} {
+			info, e := os.Stat(provider.Home(a.Home, profile))
+			add("codex "+profile+" directory", e == nil && info.IsDir(), "Explicit sb codex launch creates the directory")
+		}
+		if e := a.emit(c, map[string]any{"checks": checks}, lines); e != 0 {
+			return e
+		}
+		return code
+	}
+	if name == "claude" || name == "codex" {
+		argv := c.Claude.Args
+		if name == "codex" {
+			argv = c.Codex.Args
+		}
+		profile := "work"
+		if len(argv) > 0 && (argv[0] == "work" || argv[0] == "personal") {
+			profile = argv[0]
+			argv = argv[1:]
+		}
+		if len(argv) > 0 && argv[0] == "--" {
+			argv = argv[1:]
+		}
+		if c.DryRun {
+			return a.emit(c, map[string]string{"tool": name, "profile": profile, "reason": "explicit selection"}, []string{name + "/" + profile + "\texplicit selection"})
+		}
+		if e := provider.Launch(provider.Account{Tool: name, Profile: profile}, argv, a.Home, a.Env, false, a.Execute); e != nil {
+			return a.fail(1, e.Error())
+		}
+		return 0
+	}
+	statePath := state.Path(a.Home, a.value("XDG_STATE_HOME"))
+	s, e := state.Load(statePath)
+	if e != nil {
+		return a.fail(2, e.Error())
+	}
+	if name == "cooldown" {
+		account, e := config.ParseAccount(c.Cooldown.Account)
+		if e != nil {
+			return a.fail(2, e.Error())
+		}
+		if c.Cooldown.Duration <= 0 || c.Cooldown.Duration > 30*24*time.Hour {
+			return a.fail(2, "duration must be positive and at most 720h")
+		}
+		until := time.Now().Add(c.Cooldown.Duration)
+		if !c.DryRun {
+			s[account.ID()] = until
+			if state.Save(statePath, s) != nil {
+				return a.fail(1, "cannot save cooldown")
+			}
+		}
+		return a.emit(c, map[string]any{"account": account.ID(), "until": until.Format(time.RFC3339), "dry_run": c.DryRun}, []string{account.ID() + "\tcooldown reported"})
+	}
+	if strings.TrimSpace(c.Run.Task) == "" {
+		return a.fail(2, "task must not be empty")
+	}
+	path := c.Config
+	if path == "" {
+		path = config.Path(a.Home, a.value("XDG_CONFIG_HOME"))
+	}
+	conf, e := config.Load(path, "", c.Account)
+	if e != nil {
+		return a.fail(2, e.Error())
+	}
+	order, reason := conf.Order(c.Run.Task)
+	eligible := []provider.Account{}
+	statuses := a.statuses(background)
+	for _, candidate := range order {
+		for _, r := range statuses {
+			if r.Account == candidate && r.LoginOK != nil && *r.LoginOK && s.Eligible(candidate, time.Now()) {
+				eligible = append(eligible, candidate)
+			}
+		}
+	}
+	if len(eligible) == 0 {
+		return a.fail(3, "no eligible signed-in account; check sb status and local cooldowns")
+	}
+	pick, _ := (classifier.Rules{Config: conf}).Choose(background, c.Run.Task, eligible, conf.Confidence)
+	if pick != order[0] {
+		reason = "first eligible fallback"
+	}
+	classify := a.Classifier
+	if classify == nil {
+		classify = classifier.Jev{Key: a.value("TYPESAFE_API_KEY")}
+	} // Dry runs never disclose task text externally.
+	if !c.DryRun {
+		if chosen, ok := classify.Choose(background, c.Run.Task, eligible, conf.Confidence); ok {
+			for _, candidate := range eligible {
+				if candidate == chosen {
+					pick = chosen
+					reason = "Jev classification"
+					break
+				}
+			}
+		}
+	}
+	result := map[string]string{"tool": pick.Tool, "profile": pick.Profile, "reason": reason}
+	if c.DryRun {
+		return a.emit(c, result, []string{pick.ID() + "\t" + reason})
+	}
+	fmt.Fprintln(a.Err, "sb: "+pick.ID()+"; "+reason)
+	if e := provider.Launch(pick, []string{c.Run.Task}, a.Home, a.Env, false, a.Execute); e != nil {
+		return a.fail(1, e.Error())
+	}
+	return 0
+}
+
+func schemaNode(n *kong.Node) map[string]any {
+	out := map[string]any{"name": n.Name, "help": n.Help}
+	flags := []any{}
+	for _, f := range n.Flags {
+		flags = append(flags, map[string]any{"name": f.Name, "help": f.Help, "default": f.Default, "environment": f.Envs, "type": f.Target.Type().String()})
+	}
+	out["flags"] = flags
+	args := []string{}
+	for _, v := range n.Positional {
+		args = append(args, v.Name)
+	}
+	out["arguments"] = args
+	children := []any{}
+	for _, child := range n.Children {
+		children = append(children, schemaNode(child))
+	}
+	out["children"] = children
+	return out
+}
+
+func percent(v *float64) string {
+	if v == nil {
+		return "null"
+	}
+	return fmt.Sprintf("%g%%", *v)
+}
