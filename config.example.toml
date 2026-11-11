@@ -9,3 +9,22 @@ account = "claude/work"
 [[rules]]
 contains = "personal"
 account = "codex/personal"
+
+# Optional classifier; no key means deterministic rules. Provider defaults to
+# typesafe: https://api.typesafe.ai, jev-1.14.0, TYPESAFE_API_KEY.
+# Set provider = "off" to disable external classification.
+# WARNING: routing dry-run also sends task text when a classifier key is present.
+# Overrides (flags > env > TOML > defaults):
+# --classifier-provider / SB_CLASSIFIER_PROVIDER
+# --classifier-base-url / SB_CLASSIFIER_BASE_URL
+# --classifier-model / SB_CLASSIFIER_MODEL
+#
+# [classifier]
+# provider = "ai-gateway"
+# base_url = "https://ai-gateway.vercel.sh/typesafe"
+# model = "typesafe-ai/jev-1.14.0"
+# api_key_env = "AI_GATEWAY_API_KEY"
+# api_key_file = ""     # optional path; ~/ expands to home
+# api_key_keychain = "" # optional macOS generic-password service name
+# Keys: env, then file, then macOS Keychain; whitespace is trimmed.
+# Missing, unreadable or empty sources fall through, then rules apply.

@@ -22,3 +22,38 @@ func TestPrecedenceAndRules(t *testing.T) {
 		t.Fatal("unknown config accepted")
 	}
 }
+
+func TestClassifierConfig(t *testing.T) {
+	for _, tc := range []struct {
+		text, provider, model, env, base string
+		bad                              bool
+	}{
+		{"", "typesafe", "jev-1.14.0", "TYPESAFE_API_KEY", "https://api.typesafe.ai", false},
+		{"[classifier]\nprovider='ai-gateway'", "ai-gateway", "typesafe-ai/jev-1.14.0", "AI_GATEWAY_API_KEY", "https://ai-gateway.vercel.sh/typesafe", false},
+		{"[classifier]\nprovider='off'", "off", "jev-1.14.0", "TYPESAFE_API_KEY", "https://api.typesafe.ai", false},
+		{text: "confidence=nan", bad: true},
+		{text: "[classifier]\nprovider='unknown'", bad: true},
+		{text: "[classifier]\nbase_url='not a URL'", bad: true},
+		{text: "[classifier]\napi_key_env='bad name'", bad: true},
+		{text: "[classifier]\nunknown=true", bad: true},
+	} {
+		p := filepath.Join(t.TempDir(), "config.toml")
+		os.WriteFile(p, []byte(tc.text), 0o600)
+		c, err := Load(p, "", "")
+		if tc.bad {
+			if err == nil {
+				t.Fatal("invalid config accepted")
+			}
+			continue
+		}
+		if err != nil || c.Classifier.Provider != tc.provider || c.Classifier.Model != tc.model || c.Classifier.APIKeyEnv != tc.env || c.Classifier.BaseURL != tc.base {
+			t.Fatal("classifier defaults")
+		}
+	}
+	p := filepath.Join(t.TempDir(), "config.toml")
+	os.WriteFile(p, []byte("[classifier]\nprovider='off'\nmodel='configured'"), 0o600)
+	c, err := Load(p, "", "", Classifier{Provider: "ai-gateway", Model: "environment"}, Classifier{Model: "flag"})
+	if err != nil || c.Classifier.Provider != "ai-gateway" || c.Classifier.Model != "flag" {
+		t.Fatal("override precedence")
+	}
+}

@@ -28,7 +28,7 @@ func (p *fakeProbe) Status(_ context.Context, a provider.Account) provider.Statu
 }
 
 func TestCommands(t *testing.T) {
-	for _, args := range [][]string{{"usage", "--json"}, {"schema", "--json"}, {"status", "--json"}, {"--dry-run", "fake task", "--json"}, {"--dry-run", "codex", "personal", "--", "--version"}} {
+	for _, args := range [][]string{{"usage", "--json"}, {"schema", "--json"}, {"status", "--json"}, {"--dry-run", "codex", "personal", "--", "--version"}} {
 		var out, err bytes.Buffer
 		p := &fakeProbe{signed: true}
 		a := App{Out: &out, Err: &err, Home: t.TempDir(), UsageSource: usage.Unsupported{}, Classifier: forbiddenClassifier{t}, Probe: p, Execute: func(string, []string, []string) error { t.Fatal("unexpected launch"); return nil }}
@@ -109,7 +109,7 @@ func TestDryCooldownAndFallback(t *testing.T) {
 	if a.Run([]string{"--dry-run", "run", "fake task", "--json"}) != 0 {
 		t.Fatal("fallback failed")
 	}
-	var v map[string]string
+	var v map[string]any
 	json.Unmarshal(out.Bytes(), &v)
 	if v["tool"] != "claude" || v["profile"] != "work" || v["reason"] != "first eligible fallback" {
 		t.Fatal("wrong fallback")
@@ -118,7 +118,72 @@ func TestDryCooldownAndFallback(t *testing.T) {
 
 type forbiddenClassifier struct{ t *testing.T }
 
-func (f forbiddenClassifier) Choose(context.Context, string, []provider.Account, float64) (provider.Account, bool) {
+func (f forbiddenClassifier) Choose(context.Context, string, []provider.Account, float64) (provider.Account, float64, bool) {
 	f.t.Fatal("usage invoked classifier")
-	return provider.Account{}, false
+	return provider.Account{}, 0, false
+}
+
+type fakeClassifier struct{ calls int }
+
+func (f *fakeClassifier) Choose(context.Context, string, []provider.Account, float64) (provider.Account, float64, bool) {
+	f.calls++
+	return provider.Account{Tool: "codex", Profile: "work"}, 0.95, true
+}
+
+func TestRoutingDryRunClassifier(t *testing.T) {
+	for _, args := range [][]string{
+		{"--dry-run", "fake task", "--json"},
+		{"run", "--dry-run", "fake task", "--json"},
+		{"--dry-run", "--plain", "fake task"},
+	} {
+		var out, diag bytes.Buffer
+		home := t.TempDir()
+		f := &fakeClassifier{}
+		a := App{
+			Out: &out, Err: &diag, Home: home, Probe: &fakeProbe{signed: true}, Classifier: f,
+			Execute: func(string, []string, []string) error { t.Fatal("dry-run launched"); return nil },
+		}
+		if a.Run(args) != 0 || f.calls != 1 {
+			t.Fatal("dry-run did not classify")
+		}
+		if !bytes.Contains(out.Bytes(), []byte("Jev classification")) || !bytes.Contains(out.Bytes(), []byte("0.95")) {
+			t.Fatal("missing classification output")
+		}
+		entries, _ := os.ReadDir(home)
+		if len(entries) != 0 {
+			t.Fatal("dry-run created home or state")
+		}
+	}
+}
+
+func TestClassifierOffAndOverrides(t *testing.T) {
+	var out, diag bytes.Buffer
+	f := &fakeClassifier{}
+	a := App{Out: &out, Err: &diag, Home: t.TempDir(), Env: []string{"SB_CLASSIFIER_PROVIDER=invalid"}, Probe: &fakeProbe{signed: true}, Classifier: f}
+	if a.Run([]string{"--dry-run", "fake task"}) != 2 {
+		t.Fatal("invalid environment config")
+	}
+	if a.Run([]string{"--classifier-provider", "off", "--dry-run", "fake task", "--json"}) != 0 || f.calls != 0 {
+		t.Fatal("off override")
+	}
+	var result map[string]any
+	if json.Unmarshal(out.Bytes(), &result) != nil || result["confidence"] != nil {
+		t.Fatal("rules confidence")
+	}
+}
+
+func TestDoctorClassifier(t *testing.T) {
+	t.Setenv("PATH", t.TempDir())
+	var out, diag bytes.Buffer
+	a := App{Out: &out, Err: &diag, Home: t.TempDir(), Env: []string{"SB_CLASSIFIER_PROVIDER=off"}, Classifier: forbiddenClassifier{t}}
+	a.Run([]string{"doctor", "--json"})
+	if !bytes.Contains(out.Bytes(), []byte("classifier provider off")) || bytes.Contains(out.Bytes(), []byte("classifier key present")) {
+		t.Fatal("off doctor")
+	}
+	out.Reset()
+	a.Env = []string{"TYPESAFE_API_KEY=fake-test-value"}
+	a.Run([]string{"doctor", "--json"})
+	if !bytes.Contains(out.Bytes(), []byte("classifier key present")) || bytes.Contains(out.Bytes(), []byte("fake-test-value")) {
+		t.Fatal("doctor key presence")
+	}
 }

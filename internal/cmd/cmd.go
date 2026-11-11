@@ -26,20 +26,23 @@ type Launch struct {
 	Args []string `arg:"" optional:"" sep:"none" help:"Optional work/personal, then tool arguments (use --)."`
 }
 type CLI struct {
-	JSON    bool     `help:"Emit one JSON document."`
-	Plain   bool     `help:"Stable tab-separated output."`
-	NoInput bool     `help:"Never prompt (sb never prompts)."`
-	DryRun  bool     `help:"Read-only selection; do not launch or write."`
-	Version bool     `help:"Print version."`
-	Config  string   `help:"Config TOML path." env:"SB_CONFIG"`
-	Account string   `help:"Routing default tool/profile." env:"SB_ACCOUNT"`
-	Claude  Launch   `cmd:"" passthrough:"" help:"Exec genuine Claude (default: work)."`
-	Codex   Launch   `cmd:"" passthrough:"" help:"Exec genuine Codex (default: work)."`
-	Status  struct{} `cmd:"" help:"Check four login states, not credits."`
-	Doctor  struct{} `cmd:"" help:"Check local prerequisites without changing them."`
-	Usage   struct{} `cmd:"" help:"Read safe live usage; unknown values remain null."`
-	Schema  struct{} `cmd:"" help:"Describe actual commands and output contracts."`
-	Run     struct {
+	ClassifierProvider string   `help:"Classifier: typesafe, ai-gateway or off." env:"SB_CLASSIFIER_PROVIDER"`
+	ClassifierBaseURL  string   `help:"Classifier TypeSafe-compatible base URL." env:"SB_CLASSIFIER_BASE_URL"`
+	ClassifierModel    string   `help:"Classifier model." env:"SB_CLASSIFIER_MODEL"`
+	JSON               bool     `help:"Emit one JSON document."`
+	Plain              bool     `help:"Stable tab-separated output."`
+	NoInput            bool     `help:"Never prompt (sb never prompts)."`
+	DryRun             bool     `help:"Read-only selection; do not launch or write."`
+	Version            bool     `help:"Print version."`
+	Config             string   `help:"Config TOML path." env:"SB_CONFIG"`
+	Account            string   `help:"Routing default tool/profile." env:"SB_ACCOUNT"`
+	Claude             Launch   `cmd:"" passthrough:"" help:"Exec genuine Claude (default: work)."`
+	Codex              Launch   `cmd:"" passthrough:"" help:"Exec genuine Codex (default: work)."`
+	Status             struct{} `cmd:"" help:"Check four login states, not credits."`
+	Doctor             struct{} `cmd:"" help:"Check local prerequisites without changing them."`
+	Usage              struct{} `cmd:"" help:"Read safe live usage; unknown values remain null."`
+	Schema             struct{} `cmd:"" help:"Describe actual commands and output contracts."`
+	Run                struct {
 		Task string `arg:"" help:"Task prompt (quote as one argument)."`
 	} `cmd:"" help:"Route a task and exec the selected tool."`
 	Cooldown struct {
@@ -80,7 +83,7 @@ func normalize(args []string) []string {
 	known := map[string]bool{"run": true, "status": true, "doctor": true, "usage": true, "schema": true, "claude": true, "codex": true, "cooldown": true}
 	for i := 0; i < len(args); i++ {
 		v := args[i]
-		if v == "--config" || v == "--account" {
+		if v == "--config" || v == "--account" || v == "--classifier-provider" || v == "--classifier-base-url" || v == "--classifier-model" {
 			i++
 			continue
 		}
@@ -225,6 +228,10 @@ parsedVersion:
 		return code
 	}
 	if name == "doctor" {
+		conf, err := a.loadConfig(c)
+		if err != nil {
+			return a.fail(2, err.Error())
+		}
 		checks := []map[string]any{}
 		lines := []string{}
 		code := 0
@@ -234,6 +241,15 @@ parsedVersion:
 			if !ok {
 				code = 1
 			}
+		}
+		add("classifier provider "+conf.Classifier.Provider, true, "")
+		if conf.Classifier.Provider != "off" {
+			present := (classifier.Keys{Home: a.Home, Env: a.value}).Present(conf.Classifier)
+			fix := ""
+			if !present {
+				fix = "Set the configured classifier environment variable, readable key file, or macOS Keychain item; otherwise routing uses rules"
+			}
+			add("classifier key present", present, fix)
 		}
 		for _, tool := range []string{"claude", "codex"} {
 			_, e := exec.LookPath(tool)
@@ -302,11 +318,7 @@ parsedVersion:
 	if strings.TrimSpace(c.Run.Task) == "" {
 		return a.fail(2, "task must not be empty")
 	}
-	path := c.Config
-	if path == "" {
-		path = config.Path(a.Home, a.value("XDG_CONFIG_HOME"))
-	}
-	conf, e := config.Load(path, "", c.Account)
+	conf, e := a.loadConfig(c)
 	if e != nil {
 		return a.fail(2, e.Error())
 	}
@@ -323,30 +335,36 @@ parsedVersion:
 	if len(eligible) == 0 {
 		return a.fail(3, "no eligible signed-in account; check sb status and local cooldowns")
 	}
-	pick, _ := (classifier.Rules{Config: conf}).Choose(background, c.Run.Task, eligible, conf.Confidence)
+	pick, _, _ := (classifier.Rules{Config: conf}).Choose(background, c.Run.Task, eligible, conf.Confidence)
 	if pick != order[0] {
 		reason = "first eligible fallback"
 	}
-	classify := a.Classifier
-	if classify == nil {
-		classify = classifier.Jev{Key: a.value("TYPESAFE_API_KEY")}
-	} // Dry runs never disclose task text externally.
-	if !c.DryRun {
-		if chosen, ok := classify.Choose(background, c.Run.Task, eligible, conf.Confidence); ok {
+	var confidence *float64
+	if conf.Classifier.Provider != "off" {
+		classify := a.Classifier
+		if classify == nil {
+			classify = classifier.Jev{Key: (classifier.Keys{Home: a.Home, Env: a.value}).Resolve(conf.Classifier), Endpoint: strings.TrimRight(conf.Classifier.BaseURL, "/") + "/v1/systemone", Model: conf.Classifier.Model}
+		}
+		if chosen, score, ok := classify.Choose(background, c.Run.Task, eligible, conf.Confidence); ok && score >= conf.Confidence && score <= 1 {
 			for _, candidate := range eligible {
 				if candidate == chosen {
 					pick = chosen
 					reason = "Jev classification"
+					confidence = &score
 					break
 				}
 			}
 		}
 	}
-	result := map[string]string{"tool": pick.Tool, "profile": pick.Profile, "reason": reason}
-	if c.DryRun {
-		return a.emit(c, result, []string{pick.ID() + "\t" + reason})
+	result := map[string]any{"tool": pick.Tool, "profile": pick.Profile, "reason": reason, "confidence": confidence}
+	line := pick.ID() + "\t" + reason
+	if confidence != nil {
+		line += fmt.Sprintf("\tconfidence=%g", *confidence)
 	}
-	fmt.Fprintln(a.Err, "sb: "+pick.ID()+"; "+reason)
+	if c.DryRun {
+		return a.emit(c, result, []string{line})
+	}
+	fmt.Fprintln(a.Err, "sb: "+line)
 	if e := provider.Launch(pick, []string{c.Run.Task}, a.Home, a.Env, false, a.Execute); e != nil {
 		return a.fail(1, e.Error())
 	}
@@ -378,4 +396,17 @@ func percent(v *float64) string {
 		return "null"
 	}
 	return fmt.Sprintf("%g%%", *v)
+}
+
+func (a *App) loadConfig(c CLI) (config.Config, error) {
+	path := c.Config
+	if path == "" {
+		path = a.value("SB_CONFIG")
+	}
+	if path == "" {
+		path = config.Path(a.Home, a.value("XDG_CONFIG_HOME"))
+	}
+	return config.Load(path, a.value("SB_ACCOUNT"), c.Account,
+		config.Classifier{Provider: a.value("SB_CLASSIFIER_PROVIDER"), BaseURL: a.value("SB_CLASSIFIER_BASE_URL"), Model: a.value("SB_CLASSIFIER_MODEL")},
+		config.Classifier{Provider: c.ClassifierProvider, BaseURL: c.ClassifierBaseURL, Model: c.ClassifierModel})
 }

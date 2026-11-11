@@ -44,7 +44,8 @@ Routing uses the first case-insensitive substring rule, then the configured
 default; if that account is ineligible it tries the remaining built-in accounts in
 Claude work, Claude personal, Codex work, Codex personal order. Only positively
 signed-in accounts outside cooldown are eligible. A dry run checks status but
-never launches, creates a home, writes state or sends task text to Jev.
+never launches, creates a home or writes state. With a configured classifier key,
+it sends task text to Jev and prints the pick, reason and confidence.
 
 Copy `config.example.toml` manually to
 $XDG_CONFIG_HOME/switchboard/config.toml (default ~/.config/switchboard/config.toml).
@@ -54,13 +55,38 @@ and ordered `[[rules]]` containing `contains` and `account`. Account values are
 claude/work, claude/personal, codex/work, codex/personal. Invalid config fails
 before task launch. Unknown config keys are rejected.
 
-Setting TYPESAFE_API_KEY opts actual routing into external task classification:
-task text is POSTed to TypeSafe System One using pinned jev-1.14.0, typed Choice
-and Score questions, and a three-second bound. No key means no call. Invalid,
-low-confidence, wrong-model or ineligible answers fall back to deterministic
-rules. There is no external classification during dry runs, status, doctor or
-usage. The optional adapter follows the official
-[System One wire schema](https://api.typesafe.ai/openapi.json).
+The optional `[classifier]` table selects `provider = "typesafe"` (default),
+`"ai-gateway"`, or `"off"`. Omitted fields use these provider defaults:
+
+| Provider | base_url | model | api_key_env |
+| --- | --- | --- | --- |
+| typesafe | https://api.typesafe.ai | jev-1.14.0 | TYPESAFE_API_KEY |
+| ai-gateway | https://ai-gateway.vercel.sh/typesafe | typesafe-ai/jev-1.14.0 | AI_GATEWAY_API_KEY |
+
+Override `provider`, `base_url` and `model` with
+`--classifier-provider`, `--classifier-base-url`, `--classifier-model`, or
+`SB_CLASSIFIER_PROVIDER`, `SB_CLASSIFIER_BASE_URL`, `SB_CLASSIFIER_MODEL`.
+Precedence is flags > environment > TOML > built-in defaults. Unknown providers,
+invalid fields and unknown TOML keys fail with exit 2.
+
+Keys resolve from the configured `api_key_env`, then optional `api_key_file`
+(`~/` expands to home), then optional `api_key_keychain` (a macOS generic-password
+service name). Sources are whitespace-trimmed; missing, unreadable or empty
+sources fall through. Keychain password reads have a one-second timeout and
+discard diagnostics. No key means rules only; `off` never resolves a key or calls
+Jev. Doctor reports the configured provider and key presence only, using readable
+file presence or a Keychain lookup without password flags; it makes no repairs.
+
+**Both routing and routing dry-run send task text externally when a classifier
+key is configured.** Requests POST to `{base_url}/v1/systemone`, with Bearer
+authentication, the configured model, typed Choice/Score questions and a
+three-second bound. Invalid, low-confidence, wrong-model or ineligible answers
+fall back to deterministic rules. Model echoes accept the equivalent short or
+`typesafe-ai/`-prefixed ID. Dry-run JSON includes `reason` and `confidence`
+(number 0..1 for Jev, null for rules); plain output shows confidence when present.
+Status, doctor and usage never call Jev. No live classification was used in tests.
+The adapter follows the [System One wire schema](https://api.typesafe.ai/openapi.json)
+and [Vercel's TypeSafe-compatible API](https://vercel.com/docs/ai-gateway/sdks-and-apis/typesafe).
 
 Cooldowns are explicit local reports, not automatic 429 detection. Exec replaces
 sb, so sb cannot observe subsequent tool output or exits. State is written

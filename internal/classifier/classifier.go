@@ -7,6 +7,7 @@ import (
 	"encoding/json"
 	"io"
 	"net/http"
+	"strings"
 	"time"
 
 	"switchboard/internal/provider"
@@ -15,12 +16,13 @@ import (
 const Model = "jev-1.14.0"
 
 type Classifier interface {
-	Choose(context.Context, string, []provider.Account, float64) (provider.Account, bool)
+	Choose(context.Context, string, []provider.Account, float64) (provider.Account, float64, bool)
 }
 type Jev struct {
 	Key      string
 	Client   *http.Client
 	Endpoint string
+	Model    string
 }
 type answer struct {
 	Type          string             `json:"type"`
@@ -31,18 +33,22 @@ type answer struct {
 	Legend        map[string]string  `json:"legend"`
 }
 
-func (j Jev) Choose(ctx context.Context, task string, eligible []provider.Account, floor float64) (provider.Account, bool) {
+func (j Jev) Choose(ctx context.Context, task string, eligible []provider.Account, floor float64) (provider.Account, float64, bool) {
 	none := provider.Account{}
 	if j.Key == "" || len(eligible) == 0 {
-		return none, false
+		return none, 0, false
 	}
 	ctx, cancel := context.WithTimeout(ctx, 3*time.Second)
 	defer cancel()
+	model := j.Model
+	if model == "" {
+		model = Model
+	}
 	criteria := map[string]string{}
 	for _, a := range eligible {
 		criteria[a.ID()] = "Coding account " + a.ID()
 	}
-	body := map[string]any{"model": Model, "state": task, "questions": map[string]any{"account": map[string]any{"type": "choice", "instructions": "Select a coding account for this task", "criteria": criteria}, "difficulty": map[string]any{"type": "score", "instructions": "Rate coding difficulty", "criteria": []string{"routine", "complex", "advanced"}}}}
+	body := map[string]any{"model": model, "state": task, "questions": map[string]any{"account": map[string]any{"type": "choice", "instructions": "Select a coding account for this task", "criteria": criteria}, "difficulty": map[string]any{"type": "score", "instructions": "Rate coding difficulty", "criteria": []string{"routine", "complex", "advanced"}}}}
 	b, _ := json.Marshal(body)
 	url := j.Endpoint
 	if url == "" {
@@ -50,7 +56,7 @@ func (j Jev) Choose(ctx context.Context, task string, eligible []provider.Accoun
 	}
 	req, e := http.NewRequestWithContext(ctx, "POST", url, bytes.NewReader(b))
 	if e != nil {
-		return none, false
+		return none, 0, false
 	}
 	req.Header.Set("Authorization", "Bearer "+j.Key)
 	req.Header.Set("Content-Type", "application/json")
@@ -60,43 +66,43 @@ func (j Jev) Choose(ctx context.Context, task string, eligible []provider.Accoun
 	}
 	resp, e := client.Do(req)
 	if e != nil {
-		return none, false
+		return none, 0, false
 	}
 	defer resp.Body.Close()
 	if resp.StatusCode != 200 {
-		return none, false
+		return none, 0, false
 	}
 	var result struct {
 		Model   string            `json:"model"`
 		Answers map[string]answer `json:"answers"`
 	}
 	decoder := json.NewDecoder(io.LimitReader(resp.Body, 65536))
-	if decoder.Decode(&result) != nil || result.Model != Model {
-		return none, false
+	if decoder.Decode(&result) != nil || strings.TrimPrefix(result.Model, "typesafe-ai/") != strings.TrimPrefix(model, "typesafe-ai/") {
+		return none, 0, false
 	}
 	var trailing any
 	if decoder.Decode(&trailing) != io.EOF {
-		return none, false
+		return none, 0, false
 	}
 	a := result.Answers["account"]
 	s := result.Answers["difficulty"]
 	if !distribution(a.Probabilities, criteria) || !distribution(s.Probabilities, map[string]string{"0": "routine", "1": "complex", "2": "advanced"}) || len(s.Legend) != 3 {
-		return none, false
+		return none, 0, false
 	}
 	for _, key := range []string{"0", "1", "2"} {
 		if s.Legend[key] == "" {
-			return none, false
+			return none, 0, false
 		}
 	}
-	if a.Type != "choice" || a.Confidence == nil || *a.Confidence < floor || *a.Confidence > 1 || s.Type != "score" || s.Score == nil || *s.Score < 0 || *s.Score > 2 || s.Confidence == nil || *s.Confidence < floor || *s.Confidence > 1 {
-		return none, false
+	if a.Type != "choice" || a.Confidence == nil || *a.Confidence < 0 || *a.Confidence < floor || *a.Confidence > 1 || s.Type != "score" || s.Score == nil || *s.Score < 0 || *s.Score > 2 || s.Confidence == nil || *s.Confidence < 0 || *s.Confidence < floor || *s.Confidence > 1 {
+		return none, 0, false
 	}
 	for _, candidate := range eligible {
 		if candidate.ID() == a.Choice {
-			return candidate, true
+			return candidate, *a.Confidence, true
 		}
 	}
-	return none, false
+	return none, 0, false
 }
 
 func distribution(p map[string]float64, allowed map[string]string) bool {

@@ -20,7 +20,43 @@ Use Kong, `cmd/sb` and `internal/`, colocated tests, gofumpt/goimports. Data to 
 `sb "<task>"` and `sb run "<task>"`, global flags accepted including `sb --dry-run "fix a flaky test"`. Rules from config select deterministically and print pick + reason. Skip signed-out and cooldown accounts. Without dry-run, launch chosen real tool with task as its prompt. `--dry-run` must neither launch a task nor write state/create homes. Four default accounts; sample TOML. Flags > env > user config > built-in defaults; document supported overrides. Config: $XDG_CONFIG_HOME/switchboard/config.toml else ~/.config/switchboard/config.toml. State: $XDG_STATE_HOME/switchboard else ~/.local/state/switchboard. Restrictive atomic state writes. No credential values in state. Local 429 cooldowns must be supported honestly: exec cannot observe child output/exit after replacement, so implement a documented explicit local cooldown-report command or state input rather than pretending automatic child failure tracking. No proxy/supervisor for tasks.
 
 ## Optional Classifier
-Classifier interface, rules implementation, optional Jev/TypeSafe stub adapter using bounded POST https://api.typesafe.ai/v1/systemone with Bearer TYPESAFE_API_KEY and model pinned jev-1.14.0. Typed Choice and Score questions/answers. No key => no call. Errors, wrong model, invalid response, ineligible choice, or confidence below configured floor => deterministic rules. Tasks sent externally only when key opts in; disclose this. Never echo key or raw response. Tests use httptest only, never real Jev. Useful API references: https://docs.typesafe.ai/concepts/system-one and https://api.typesafe.ai/openapi.json. Use actual wire shape rather than inventing an OpenAI-compatible response.
+Classifier interface, deterministic rules and optional Jev adapter. Config TOML
+`[classifier]` fields: `provider`, `base_url`, `model`, `api_key_env`,
+`api_key_file`, `api_key_keychain`. Provider defaults to `typesafe`; its defaults
+are https://api.typesafe.ai, jev-1.14.0, TYPESAFE_API_KEY. Provider `ai-gateway`
+defaults to https://ai-gateway.vercel.sh/typesafe, typesafe-ai/jev-1.14.0,
+AI_GATEWAY_API_KEY. Provider `off` never resolves keys or calls Jev.
+Unknown providers, invalid config and unknown TOML keys fail with exit 2.
+Overrides `--classifier-provider` / SB_CLASSIFIER_PROVIDER,
+`--classifier-base-url` / SB_CLASSIFIER_BASE_URL and `--classifier-model` /
+SB_CLASSIFIER_MODEL follow flags > env > config > built-in defaults.
+
+Resolve keys in order: configured env, optional key file (expand `~/`), then on
+darwin only optional generic-password Keychain service using
+`security find-generic-password -w -s <service>` with a one-second timeout.
+Trim whitespace; missing, unreadable or empty sources fall through to the next
+source, then rules. Never output keys or subprocess diagnostics. Doctor reports
+provider and key presence only (env, readable file, or darwin Keychain lookup
+without -w/-g); off needs no key. No automatic writes.
+
+POST `{base_url}/v1/systemone` after trimming trailing slashes, with
+Content-Type application/json, Bearer key, configured model and typed Choice/Score
+questions/answers. Three-second bound. No key => no HTTP call. Errors, wrong
+model, invalid response, ineligible choice or confidence below configured floor
+=> deterministic rules. Accept the configured response model or its equivalent
+with/without the `typesafe-ai/` prefix. Never echo keys or raw responses.
+No Decision fallbacks, providerOptions or OpenAI response emulation.
+
+Routing dry-runs intentionally classify too: both `sb --dry-run "<task>"` and
+`sb run --dry-run "<task>"` send task text externally when a classifier key is
+configured and provider is not off. They still never launch, create homes or
+write state. Print pick, reason and confidence; JSON confidence is 0..1 on Jev
+success and null for rules, with reason "Jev classification" on success. Plain
+output shows confidence when present. Status, doctor and usage never call Jev.
+Tests use only fake transports/httptest and stub Keychain; no live classification.
+References: https://docs.typesafe.ai/concepts/system-one,
+https://api.typesafe.ai/openapi.json and
+https://vercel.com/docs/ai-gateway/sdks-and-apis/typesafe.
 
 ## Strictly read-only usage reporting (same v0.1)
 `sb usage --json` prints ONE document:
