@@ -63,7 +63,7 @@ func (a *App) launchFamily(c CLI, family string, accountFlag bool) int {
 			}
 		}
 		rows := a.selectionUsage(ctx, c, conf, statuses, s, statePath, now)
-		pick, reason, _ = picker.Pick([]string{family}, statuses, s, rows, conf.UsageExhaustedPct, now)
+		pick, reason, _ = picker.Pick([]string{family}, statuses, s, rows, conf.UsageExhaustedPct, conf.HarvestMinHeadroomPct, conf.HarvestWindowHours, now)
 		if !pick.Valid() {
 			return a.fail(3, "no eligible signed-in account; check sb status and local cooldowns")
 		}

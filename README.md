@@ -57,17 +57,23 @@ Jev sees unique available launchable families, never profiles; AGY/Grok are not
 launch targets. Status login is eligibility, not a claim of usable credits.
 
 Within a family, binding used is the maximum known weekly/five-hour percentage;
-headroom is 100 minus binding used. Any window at or over `usage_exhausted_pct`
-(default 95, finite 0..100) sets the exhausted flag. Accounts with remaining quota
-(headroom > 0), including those over the cap, rank first; unknown usage (both
-windows null) ranks next, then fully used accounts (headroom <= 0). Prefer the
-soonest known reset among remaining-quota accounts, then higher headroom, then
-work before personal. Resets come only from windows at/over the cap when exhausted;
-otherwise use the earliest known reset. Fully used accounts prefer the soonest
-exhausting-window reset; missing resets rank last. Extra windows are not consulted
-in v0.1. Task routing falls back to another family only when none is signed in
-outside cooldown; none anywhere
-exits 3. Unknown stays unknown and never fails a pick solely for missing usage.
+headroom is 100 minus binding used. The binding window has the higher usage;
+equal usage binds to the window with the sooner known reset. Any known window at
+or over `usage_exhausted_pct` (default 95, finite 0..100) sets the exhausted flag.
+Rank under-cap accounts with headroom > 0 first, unknown usage (both windows null)
+next, exhausted accounts with headroom > 0 next, then fully used accounts
+(headroom <= 0). Extra windows are not consulted in v0.1.
+
+Within the under-cap tier, harvest accounts with headroom at least
+`harvest_min_headroom_pct` (default 10, finite 0..100) whose binding window's own
+reset is known, in the future and within `harvest_window_hours` (default 6, finite
+and >= 0; zero disables harvesting). Prefer the soonest binding reset among these
+accounts; otherwise prefer the most headroom. Under-cap accounts below the minimum
+still rank above unknown usage. Exhausted accounts with remaining quota prefer
+most headroom. Fully used accounts prefer the soonest known binding reset, with
+missing resets last. Ties prefer work before personal. Task routing falls back to
+another family only when none is signed in outside cooldown; none anywhere exits 3.
+Unknown stays unknown and never fails a pick solely for missing usage.
 
 `--account` > `SB_ACCOUNT` > TOML `pin` hard-pins an exact tool/profile, bypassing
 Jev and usage selection. A signed-out, unknown-login or cooldown pin exits 3;

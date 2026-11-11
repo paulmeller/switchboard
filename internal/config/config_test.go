@@ -1,10 +1,56 @@
 package config
 
 import (
+	"fmt"
 	"os"
 	"path/filepath"
 	"testing"
 )
+
+func TestHarvestConfig(t *testing.T) {
+	for _, tc := range []struct {
+		body           string
+		minimum, hours float64
+	}{
+		{"", 10, 6},
+		{"harvest_min_headroom_pct=25.5", 25.5, 6},
+		{"harvest_window_hours=0.5", 10, 0.5},
+		{"harvest_min_headroom_pct=0\nharvest_window_hours=0", 0, 0},
+		{"harvest_min_headroom_pct=100\nharvest_window_hours=1000", 100, 1000},
+	} {
+		t.Run(tc.body, func(t *testing.T) {
+			path := filepath.Join(t.TempDir(), "config.toml")
+			if err := os.WriteFile(path, []byte(tc.body), 0o600); err != nil {
+				t.Fatal(err)
+			}
+			c, err := Load(path, "", "")
+			if err != nil || c.HarvestMinHeadroomPct != tc.minimum || c.HarvestWindowHours != tc.hours {
+				t.Fatalf("harvest config: minimum=%g hours=%g error=%v", c.HarvestMinHeadroomPct, c.HarvestWindowHours, err)
+			}
+		})
+	}
+	for key, values := range map[string][]string{
+		"harvest_min_headroom_pct": {"-0.1", "100.1", "nan", "+nan", "-nan", "inf", "+inf", "-inf"},
+		"harvest_window_hours":     {"-0.1", "nan", "+nan", "-nan", "inf", "+inf", "-inf"},
+	} {
+		for _, value := range values {
+			t.Run(key+"="+value, func(t *testing.T) {
+				path := filepath.Join(t.TempDir(), "config.toml")
+				if err := os.WriteFile(path, []byte(fmt.Sprintf("%s=%s", key, value)), 0o600); err != nil {
+					t.Fatal(err)
+				}
+				if _, err := Load(path, "", ""); err == nil {
+					t.Fatal("invalid harvest config accepted")
+				}
+			})
+		}
+	}
+	// A missing config file uses the same built-in defaults as omitted settings.
+	c, err := Load(filepath.Join(t.TempDir(), "missing.toml"), "", "")
+	if err != nil || c.HarvestMinHeadroomPct != 10 || c.HarvestWindowHours != 6 {
+		t.Fatal("missing config defaults")
+	}
+}
 
 func TestPrecedenceAndRules(t *testing.T) {
 	p := filepath.Join(t.TempDir(), "config.toml")

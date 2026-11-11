@@ -44,7 +44,7 @@ func TestExplicitFamilySelection(t *testing.T) {
 				var out, diag bytes.Buffer
 				home := t.TempDir()
 				now := time.Now()
-				workUsed, personalUsed := 97., 12.
+				workUsed, personalUsed := 97., 13.
 				soon, later := now.Add(time.Hour).Format(time.RFC3339), now.Add(7*24*time.Hour).Format(time.RFC3339)
 				src := &familyUsage{t: t, family: family, rows: map[string]usage.Data{
 					"work":     {Source: "fake", ObservedAt: now, Weekly: &workUsed, WeeklyReset: &soon},
@@ -62,14 +62,18 @@ func TestExplicitFamilySelection(t *testing.T) {
 					t.Fatal(diag.String())
 				}
 				var result map[string]string
-				if json.Unmarshal(out.Bytes(), &result) != nil || result["tool"] != family || result["profile"] != "work" || result["id"] == "" {
+				wantProfile := "personal"
+				if unknown {
+					wantProfile = "work"
+				}
+				if json.Unmarshal(out.Bytes(), &result) != nil || result["tool"] != family || result["profile"] != wantProfile || result["id"] == "" {
 					t.Fatal("wrong selection or missing id")
 				}
 				if unknown {
 					if result["reason"] != "unknown usage, ranked below known headroom" {
 						t.Fatal("unknown usage reason lost")
 					}
-				} else if !strings.HasPrefix(result["reason"], "soonest reset ") {
+				} else if result["reason"] != "most headroom: 87% left" {
 					t.Fatal("picker reason lost")
 				}
 				if p.calls == 0 || src.calls.Load() != 2 {
@@ -81,7 +85,7 @@ func TestExplicitFamilySelection(t *testing.T) {
 				}
 				d := records[0]
 				hash := sha256.Sum256(nil)
-				if !d.ExplicitFamily || !d.DryRun || d.Source != "rules" || d.Family != family || d.Account != family+"/work" || d.Label != nil || d.Override != nil || d.ID != result["id"] || d.Reason != result["reason"] || d.Task == nil || *d.Task != "" || d.TaskSHA256 != hex.EncodeToString(hash[:]) || d.ExitCode != nil || d.DurationMS != nil {
+				if !d.ExplicitFamily || !d.DryRun || d.Source != "rules" || d.Family != family || d.Account != family+"/"+wantProfile || d.Label != nil || d.Override != nil || d.ID != result["id"] || d.Reason != result["reason"] || d.Task == nil || *d.Task != "" || d.TaskSHA256 != hex.EncodeToString(hash[:]) || d.ExitCode != nil || d.DurationMS != nil {
 					t.Fatal("incorrect normalized launch decision")
 				}
 				onlyDecisionLog(t, home)
@@ -118,6 +122,43 @@ func TestExplicitFamilyPins(t *testing.T) {
 		a := App{Home: t.TempDir(), Out: &out, Err: &diag, Probe: &fakeProbe{}, UsageSource: forbiddenUsage{t}, Classifier: forbiddenClassifier{t}}
 		if a.Run([]string{"--dry-run", "--account=" + account, "codex"}) != 2 {
 			t.Fatal("invalid or mismatched account accepted")
+		}
+	}
+}
+
+func TestHarvestConfigSelection(t *testing.T) {
+	for _, command := range [][]string{{"codex"}, {"run", "fake task"}} {
+		for _, tc := range []struct{ setting, profile string }{
+			{"", "work"},
+			{"harvest_min_headroom_pct=31", "personal"},
+			{"harvest_window_hours=0", "personal"},
+			{"harvest_window_hours=0.5", "personal"},
+			{"usage_exhausted_pct=70", "personal"},
+		} {
+			t.Run(command[0]+"/"+tc.setting, func(t *testing.T) {
+				home := t.TempDir()
+				path := filepath.Join(home, "config.toml")
+				if err := os.WriteFile(path, []byte(tc.setting+"\n[classifier]\nprovider='off'"), 0o600); err != nil {
+					t.Fatal(err)
+				}
+				now := time.Now()
+				workUsed, personalUsed := 70., 13.
+				reset := now.Add(time.Hour).Format(time.RFC3339)
+				src := &familyUsage{t: t, family: "codex", rows: map[string]usage.Data{
+					"work":     {Source: "fake", ObservedAt: now, Weekly: &workUsed, WeeklyReset: &reset},
+					"personal": {Source: "fake", ObservedAt: now, Weekly: &personalUsed},
+				}}
+				var out, diag bytes.Buffer
+				a := App{Home: home, Out: &out, Err: &diag, Probe: profileProbe{map[string]bool{"codex/work": true, "codex/personal": true}}, UsageSource: src, Classifier: forbiddenClassifier{t}}
+				args := append([]string{"--config", path, "--dry-run", "--json"}, command...)
+				if a.Run(args) != 0 {
+					t.Fatal(diag.String())
+				}
+				var result map[string]any
+				if json.Unmarshal(out.Bytes(), &result) != nil || result["tool"] != "codex" || result["profile"] != tc.profile {
+					t.Fatal("harvest config did not reach selection")
+				}
+			})
 		}
 	}
 }

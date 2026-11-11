@@ -422,7 +422,7 @@ parsedVersion:
 			}
 		}
 		rows := a.selectionUsage(background, c, conf, statuses, s, statePath, now)
-		pick, reason, candidates = picker.Pick(familyOrder, statuses, s, rows, conf.UsageExhaustedPct, now)
+		pick, reason, candidates = picker.Pick(familyOrder, statuses, s, rows, conf.UsageExhaustedPct, conf.HarvestMinHeadroomPct, conf.HarvestWindowHours, now)
 		if !pick.Valid() {
 			return a.fail(3, "no eligible signed-in account; check sb status and local cooldowns")
 		}

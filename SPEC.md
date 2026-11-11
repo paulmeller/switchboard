@@ -99,15 +99,25 @@ first, remaining families Claude then Codex. Jev returns a family and account_fl
 is its probability floor; difficulty confidence never blocks a passing family.
 
 Within each family use status-probe login (never usage login) and local cooldowns.
-Exclude unknown/signed-out login and cooldown. Rank remaining quota (headroom > 0),
-unknown usage, then fully used accounts (headroom <= 0). Binding used is max(known weekly, five-hour);
-headroom is 100 minus binding used. Any known window >= usage_exhausted_pct
-(default 95, finite 0..100) sets the exhausted flag; ignore extra windows. Remaining
-quota ranks first even when over the cap: prefer the soonest known reset, then
-higher headroom, then work before personal. Exhausted accounts use only resets
-of exhausting windows; otherwise use the earliest known reset. Fully used accounts
-prefer the soonest exhausting-window reset, missing resets last. Only fall back to
-another family if none is signed in outside cooldown. No usable account exits 3.
+Exclude unknown/signed-out login and cooldown. Binding used is max(known weekly,
+five-hour); headroom is 100 minus binding used. The binding window has higher
+usage; equal usage binds to the sooner known reset. Any known window >=
+usage_exhausted_pct (default 95, finite 0..100) sets the exhausted flag; ignore
+extra windows. Rank under-cap accounts with headroom > 0, unknown usage (both
+windows null), exhausted accounts with headroom > 0, then fully used accounts
+(headroom <= 0). Exhausted accounts never beat an under-cap or unknown sibling.
+
+Within the under-cap tier, harvest eligibility requires headroom >=
+harvest_min_headroom_pct (default 10, finite 0..100) and the binding window's own
+reset known, in the future and within harvest_window_hours (default 6, finite
+and >= 0; zero disables harvesting). Prefer the soonest binding reset among
+harvest-eligible accounts; otherwise most headroom. Under-cap accounts below the
+minimum still rank above unknown usage. Exhausted accounts with remaining quota
+prefer most headroom. Fully used accounts prefer the soonest known binding reset,
+missing resets last. Ties prefer work before personal. Harvest reasons use
+"expiring soon: resets HH:MM ZONE, N% left"; most-headroom reasons use
+"most headroom: N% left". Only fall back to another family if none is signed in
+outside cooldown. No usable account exits 3.
 
 --account / SB_ACCOUNT / TOML pin are hard pins in that precedence: bypass Jev
 and usage selection, fail exit 3 if unavailable. Explicit family commands only
