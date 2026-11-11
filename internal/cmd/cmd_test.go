@@ -29,7 +29,7 @@ func (p *fakeProbe) Status(_ context.Context, a provider.Account) provider.Statu
 }
 
 func TestCommands(t *testing.T) {
-	for _, args := range [][]string{{"usage", "--json"}, {"schema", "--json"}, {"status", "--json"}, {"--dry-run", "codex", "personal", "--", "--version"}} {
+	for _, args := range [][]string{{"usage", "--json"}, {"schema", "--json"}, {"status", "--json"}} {
 		var out, err bytes.Buffer
 		p := &fakeProbe{signed: true}
 		a := App{Out: &out, Err: &err, Home: t.TempDir(), UsageSource: usage.Unsupported{}, Classifier: forbiddenClassifier{t}, Probe: p, Execute: func(string, []string, []string) error { t.Fatal("unexpected launch"); return nil }}

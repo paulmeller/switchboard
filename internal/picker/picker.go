@@ -26,7 +26,7 @@ type Candidate struct {
 	reset       time.Time
 }
 
-func Pick(order []string, statuses []provider.Status, cooldown state.State, rows []usage.Row, cap float64, now time.Time) (provider.Account, string, []Candidate) {
+func Pick(order []string, statuses []provider.Status, cooldown state.State, rows []usage.Row, cap, minHeadroom, windowHours float64, now time.Time) (provider.Account, string, []Candidate) {
 	candidates := []Candidate{}
 	for _, a := range provider.Accounts() {
 		c := Candidate{Account: a.ID(), account: a, Cooldown: !cooldown.Eligible(a, now)}
@@ -46,26 +46,25 @@ func Pick(order []string, statuses []provider.Status, cooldown state.State, rows
 		}{{c.Weekly, c.WeeklyReset}, {c.Five, c.FiveReset}} {
 			if w.used != nil {
 				h := 100 - *w.used
-				if c.Headroom == nil || h < *c.Headroom {
+				reset := time.Time{}
+				if w.reset != nil {
+					reset, _ = time.Parse(time.RFC3339, *w.reset)
+				}
+				// Bind to the highest usage; equal usage binds to the sooner known reset.
+				if c.Headroom == nil || h < *c.Headroom || (h == *c.Headroom && !reset.IsZero() && (c.reset.IsZero() || reset.Before(c.reset))) {
 					c.Headroom = &h
+					c.reset = reset
 				}
 				if *w.used >= cap {
 					c.Exhausted = true
 				}
 			}
 		}
-		for _, w := range []struct {
-			used  *float64
-			reset *string
-		}{{c.Weekly, c.WeeklyReset}, {c.Five, c.FiveReset}} {
-			if w.reset != nil && (!c.Exhausted || (w.used != nil && *w.used >= cap)) {
-				t, e := time.Parse(time.RFC3339, *w.reset)
-				if e == nil && (c.reset.IsZero() || t.Before(c.reset)) {
-					c.reset = t
-				}
-			}
-		}
 		candidates = append(candidates, c)
+	}
+	harvest := func(c Candidate) bool {
+		return c.Headroom != nil && *c.Headroom > 0 && !c.Exhausted && *c.Headroom >= minHeadroom &&
+			windowHours > 0 && c.reset.After(now) && c.reset.Sub(now).Hours() <= windowHours
 	}
 	for _, family := range order {
 		indexes := []int{}
@@ -75,11 +74,14 @@ func Pick(order []string, statuses []provider.Status, cooldown state.State, rows
 			}
 		}
 		rank := func(c Candidate) int {
-			if c.Exhausted {
-				return 2
-			}
 			if c.Headroom == nil {
 				return 1
+			}
+			if *c.Headroom <= 0 {
+				return 3
+			}
+			if c.Exhausted {
+				return 2
 			}
 			return 0
 		}
@@ -88,13 +90,24 @@ func Pick(order []string, statuses []provider.Status, cooldown state.State, rows
 			if rank(a) != rank(b) {
 				return rank(a) < rank(b)
 			}
-			if !a.Exhausted && a.Headroom != nil && b.Headroom != nil && *a.Headroom != *b.Headroom {
+			switch rank(a) {
+			case 0:
+				if harvest(a) != harvest(b) {
+					return harvest(a)
+				}
+				if harvest(a) {
+					return a.reset.Before(b.reset)
+				}
 				return *a.Headroom > *b.Headroom
+			case 2:
+				return *a.Headroom > *b.Headroom
+			case 3:
+				if a.reset.IsZero() != b.reset.IsZero() {
+					return !a.reset.IsZero()
+				}
+				return a.reset.Before(b.reset)
 			}
-			if a.reset.IsZero() != b.reset.IsZero() {
-				return !a.reset.IsZero()
-			}
-			return a.reset.Before(b.reset)
+			return false
 		})
 		if len(indexes) == 0 {
 			continue
@@ -102,20 +115,21 @@ func Pick(order []string, statuses []provider.Status, cooldown state.State, rows
 		c := &candidates[indexes[0]]
 		c.Chosen = true
 		reason := "unknown usage, ranked below known headroom"
-		pct := func(v *float64) string {
-			if v == nil {
-				return "unknown"
-			}
-			return fmt.Sprintf("%g%%", *v)
-		}
 		if c.Headroom != nil {
-			reason = fmt.Sprintf("most headroom: weekly %s, 5h %s", pct(c.Weekly), pct(c.Five))
+			reason = fmt.Sprintf("most headroom: %g%% left", *c.Headroom)
+			if c.Exhausted {
+				reason = "all exhausted; " + reason
+			}
 		}
-		if c.Exhausted {
+		if c.Headroom != nil && *c.Headroom <= 0 {
 			reason = "all exhausted; reset unknown"
-			if !c.reset.IsZero() {
-				loc, _ := time.LoadLocation("Australia/Sydney")
-				reason = "soonest reset " + c.reset.In(loc).Format("15:04 MST")
+		}
+		if harvest(*c) || (c.Headroom != nil && *c.Headroom <= 0 && !c.reset.IsZero()) {
+			loc, _ := time.LoadLocation("Australia/Sydney")
+			reset := c.reset.In(loc).Format("15:04 MST")
+			reason = fmt.Sprintf("expiring soon: resets %s, %g%% left", reset, *c.Headroom)
+			if *c.Headroom <= 0 {
+				reason = "all fully used; soonest reset " + reset
 			}
 		}
 		return c.account, reason, candidates

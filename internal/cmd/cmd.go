@@ -6,7 +6,6 @@ import (
 	"io"
 	"os"
 	"os/exec"
-	"path/filepath"
 	"runtime"
 	"strings"
 	"time"
@@ -37,12 +36,12 @@ type CLI struct {
 	Plain              bool     `help:"Stable tab-separated output."`
 	NoInput            bool     `help:"Never prompt (sb never prompts)."`
 	DryRun             bool     `help:"Select without launch, homes or state writes; may append decision log."`
-	NoLog              bool     `help:"Disable routing decision logging for this invocation."`
+	NoLog              bool     `help:"Disable decision logging for this invocation."`
 	Version            bool     `help:"Print version."`
 	Config             string   `help:"Config TOML path." env:"SB_CONFIG"`
 	Account            string   `help:"Hard pin tool/profile; for feedback, correct the account." env:"SB_ACCOUNT"`
-	Claude             Launch   `cmd:"" passthrough:"" help:"Exec genuine Claude (default: work)."`
-	Codex              Launch   `cmd:"" passthrough:"" help:"Exec genuine Codex (default: work)."`
+	Claude             Launch   `cmd:"" passthrough:"" help:"Balance Claude accounts and exec; optional work/personal pin."`
+	Codex              Launch   `cmd:"" passthrough:"" help:"Balance Codex accounts and exec; optional work/personal pin."`
 	Status             struct{} `cmd:"" help:"Check four login states, not credits."`
 	Doctor             struct{} `cmd:"" help:"Check local prerequisites without changing them."`
 	Usage              struct{} `cmd:"" help:"Read safe live usage; unknown values remain null."`
@@ -302,25 +301,13 @@ parsedVersion:
 		return code
 	}
 	if name == "claude" || name == "codex" {
-		argv := c.Claude.Args
-		if name == "codex" {
-			argv = c.Codex.Args
+		explicit := false
+		for _, step := range ctx.Path {
+			if step.Flag != nil && step.Flag.Name == "account" && !step.Resolved {
+				explicit = true
+			}
 		}
-		profile := "work"
-		if len(argv) > 0 && (argv[0] == "work" || argv[0] == "personal") {
-			profile = argv[0]
-			argv = argv[1:]
-		}
-		if len(argv) > 0 && argv[0] == "--" {
-			argv = argv[1:]
-		}
-		if c.DryRun {
-			return a.emit(c, map[string]string{"tool": name, "profile": profile, "reason": "explicit selection"}, []string{name + "/" + profile + "\texplicit selection"})
-		}
-		if e := provider.Launch(provider.Account{Tool: name, Profile: profile}, argv, a.Home, a.Env, false, a.Execute); e != nil {
-			return a.fail(1, e.Error())
-		}
-		return 0
+		return a.launchFamily(c, name, explicit)
 	}
 	statePath := state.Path(a.Home, a.value("XDG_STATE_HOME"))
 	s, e := state.Load(statePath)
@@ -434,21 +421,8 @@ parsedVersion:
 				familyOrder = append(familyOrder, f)
 			}
 		}
-		needed := []usage.Row{}
-		for _, r := range usage.Defaults() {
-			for _, st := range statuses {
-				if st.Tool == r.Tool && st.Profile == r.Profile && st.LoginOK != nil && *st.LoginOK && s.Eligible(st.Account, now) {
-					needed = append(needed, r)
-				}
-			}
-		}
-		src := a.UsageSource
-		if src == nil {
-			src = usage.Live(a.Home, a.Env)
-		}
-		ttl, _ := time.ParseDuration(conf.UsageCacheTTL)
-		rows := picker.Cached(background, src, filepath.Join(filepath.Dir(statePath), "usage-cache.json"), needed, ttl, 2*time.Second, now, !c.DryRun)
-		pick, reason, candidates = picker.Pick(familyOrder, statuses, s, rows, conf.UsageExhaustedPct, now)
+		rows := a.selectionUsage(background, c, conf, statuses, s, statePath, now)
+		pick, reason, candidates = picker.Pick(familyOrder, statuses, s, rows, conf.UsageExhaustedPct, conf.HarvestMinHeadroomPct, conf.HarvestWindowHours, now)
 		if !pick.Valid() {
 			return a.fail(3, "no eligible signed-in account; check sb status and local cooldowns")
 		}

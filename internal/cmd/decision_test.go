@@ -62,7 +62,7 @@ func TestDecisionLogging(t *testing.T) {
 			}
 			d := records[0]
 			hash := sha256.Sum256([]byte("task bytes"))
-			if d.Task == nil || *d.Task != "task bytes" || d.TaskSHA256 != hex.EncodeToString(hash[:]) || !d.DryRun || d.Type != "decision" || d.Source != "jev" || d.Account != "codex/work" || d.Probability == nil || d.ExitCode != nil || d.DurationMS != nil {
+			if d.Task == nil || *d.Task != "task bytes" || d.TaskSHA256 != hex.EncodeToString(hash[:]) || !d.DryRun || d.ExplicitFamily || d.Type != "decision" || d.Source != "jev" || d.Account != "codex/work" || d.Probability == nil || d.ExitCode != nil || d.DurationMS != nil {
 				t.Fatalf("unexpected decision: %+v", d)
 			}
 			var result map[string]any
@@ -70,6 +70,10 @@ func TestDecisionLogging(t *testing.T) {
 				t.Fatal("missing decision id")
 			}
 			b, _ := os.ReadFile(path)
+			var fields map[string]any
+			if json.Unmarshal(b, &fields) != nil || fields["explicit_family"] != false {
+				t.Fatal("missing explicit_family=false")
+			}
 			for _, secret := range []string{"fake-test-value", "TYPESAFE_API_KEY", "candidates", "weekly_used_pct"} {
 				if bytes.Contains(b, []byte(secret)) {
 					t.Fatal("non-normalized log")
@@ -85,8 +89,16 @@ func TestLogControls(t *testing.T) {
 	for _, tc := range []struct {
 		name, config          string
 		noLog, redact, broken bool
+		family                bool
 	}{
-		{name: "no-log", noLog: true}, {name: "disabled", config: "[log]\nenabled=false"}, {name: "redacted", config: "[log]\nredact_task=true", redact: true}, {name: "failed", broken: true},
+		{name: "no-log", noLog: true},
+		{name: "disabled", config: "[log]\nenabled=false"},
+		{name: "redacted", config: "[log]\nredact_task=true", redact: true},
+		{name: "failed", broken: true},
+		{name: "family no-log", family: true, noLog: true},
+		{name: "family disabled", family: true, config: "[log]\nenabled=false"},
+		{name: "family redacted", family: true, config: "[log]\nredact_task=true", redact: true},
+		{name: "family failed", family: true, broken: true},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			var out, diag bytes.Buffer
@@ -103,16 +115,23 @@ func TestLogControls(t *testing.T) {
 				t.Fatal(err)
 			}
 			a := App{Home: home, Env: []string{"XDG_DATA_HOME=" + data}, Out: &out, Err: &diag, Probe: &fakeProbe{signed: true}, UsageSource: usage.Unsupported{}, Classifier: &fakeClassifier{}}
-			args := []string{"--config", conf, "classify", "--json", "redacted text"}
+			args := []string{"--config", conf, "--dry-run", "--json"}
 			if tc.noLog {
 				args = append(args, "--no-log")
+			}
+			task := "redacted text"
+			if tc.family {
+				task = ""
+				args = append(args, "codex", "--", "redacted text")
+			} else {
+				args = append(args, "classify", task)
 			}
 			if a.Run(args) != 0 {
 				t.Fatal(diag.String())
 			}
 			records, err := decision.Read(decision.Path(home, data))
 			if tc.redact {
-				hash := sha256.Sum256([]byte("redacted text"))
+				hash := sha256.Sum256([]byte(task))
 				if err != nil || len(records) != 1 || records[0].Task != nil || records[0].TaskSHA256 != hex.EncodeToString(hash[:]) {
 					t.Fatal("redaction failed")
 				}
@@ -277,23 +296,24 @@ func TestFeedbackExplicitLabelRequired(t *testing.T) {
 
 func TestRoutingFailureLoggingDoesNotChangeExit(t *testing.T) {
 	for _, disabled := range []bool{false, true} {
-		var out, diag bytes.Buffer
-		home := t.TempDir()
-		data := t.TempDir()
-		blocked := filepath.Join(data, "blocked")
-		if err := os.WriteFile(blocked, []byte("blocked"), 0o600); err != nil {
-			t.Fatal(err)
-		}
-		a := App{Home: home, Env: []string{"XDG_DATA_HOME=" + blocked}, Out: &out, Err: &diag, Probe: &fakeProbe{}, Classifier: forbiddenClassifier{t}, UsageSource: forbiddenUsage{t}}
-		args := []string{"classify", "task"}
-		if disabled {
-			args = append(args, "--no-log")
-		}
-		if a.Run(args) != 3 {
-			t.Fatal("logging changed no-eligible exit")
-		}
-		if bytes.Contains(diag.Bytes(), []byte("cannot append decision log")) == disabled {
-			t.Fatal("log failure diagnostic")
+		for _, args := range [][]string{{"classify", "task"}, {"codex"}} {
+			var out, diag bytes.Buffer
+			home := t.TempDir()
+			data := t.TempDir()
+			blocked := filepath.Join(data, "blocked")
+			if err := os.WriteFile(blocked, []byte("blocked"), 0o600); err != nil {
+				t.Fatal(err)
+			}
+			a := App{Home: home, Env: []string{"XDG_DATA_HOME=" + blocked}, Out: &out, Err: &diag, Probe: &fakeProbe{}, Classifier: forbiddenClassifier{t}, UsageSource: forbiddenUsage{t}}
+			if disabled {
+				args = append([]string{"--no-log"}, args...)
+			}
+			if a.Run(args) != 3 {
+				t.Fatal("logging changed no-eligible exit")
+			}
+			if bytes.Contains(diag.Bytes(), []byte("cannot append decision log")) == disabled {
+				t.Fatal("log failure diagnostic")
+			}
 		}
 	}
 }

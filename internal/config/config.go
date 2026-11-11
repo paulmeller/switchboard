@@ -67,17 +67,19 @@ type Log struct {
 }
 
 type Config struct {
-	Log               Log                 `toml:"log"`
-	Pin               string              `toml:"pin"`
-	UsageExhaustedPct float64             `toml:"usage_exhausted_pct"`
-	UsageCacheTTL     string              `toml:"usage_cache_ttl"`
-	Classifier        Classifier          `toml:"classifier"`
-	Default           string              `toml:"default"`
-	Confidence        float64             `toml:"confidence"`
-	AccountFloor      float64             `toml:"account_floor"`
-	DifficultyFloor   float64             `toml:"difficulty_floor"`
-	Accounts          map[string]Criteria `toml:"accounts"`
-	Rules             []Rule              `toml:"rules"`
+	Log                   Log                 `toml:"log"`
+	Pin                   string              `toml:"pin"`
+	UsageExhaustedPct     float64             `toml:"usage_exhausted_pct"`
+	HarvestMinHeadroomPct float64             `toml:"harvest_min_headroom_pct"`
+	HarvestWindowHours    float64             `toml:"harvest_window_hours"`
+	UsageCacheTTL         string              `toml:"usage_cache_ttl"`
+	Classifier            Classifier          `toml:"classifier"`
+	Default               string              `toml:"default"`
+	Confidence            float64             `toml:"confidence"`
+	AccountFloor          float64             `toml:"account_floor"`
+	DifficultyFloor       float64             `toml:"difficulty_floor"`
+	Accounts              map[string]Criteria `toml:"accounts"`
+	Rules                 []Rule              `toml:"rules"`
 }
 
 func Path(home, xdg string) string {
@@ -97,7 +99,7 @@ func ParseAccount(s string) (provider.Account, error) {
 }
 
 func Load(path, envDefault, flagDefault string, overrides ...Classifier) (Config, error) {
-	c := Config{Log: Log{Enabled: true, MaxBytes: 5242880}, Default: "codex/work", UsageExhaustedPct: 95, UsageCacheTTL: "60s", AccountFloor: 0.5, DifficultyFloor: 0.5}
+	c := Config{Log: Log{Enabled: true, MaxBytes: 5242880}, Default: "codex/work", UsageExhaustedPct: 95, HarvestMinHeadroomPct: 10, HarvestWindowHours: 6, UsageCacheTTL: "60s", AccountFloor: 0.5, DifficultyFloor: 0.5}
 	b, e := os.ReadFile(path)
 	if e == nil {
 		if toml.NewDecoder(bytes.NewReader(b)).DisallowUnknownFields().Decode(&c) != nil {
@@ -154,6 +156,12 @@ func Load(path, envDefault, flagDefault string, overrides ...Classifier) (Config
 	}
 	if math.IsNaN(c.UsageExhaustedPct) || math.IsInf(c.UsageExhaustedPct, 0) || c.UsageExhaustedPct < 0 || c.UsageExhaustedPct > 100 {
 		return c, errors.New("usage_exhausted_pct must be 0..100")
+	}
+	if math.IsNaN(c.HarvestMinHeadroomPct) || math.IsInf(c.HarvestMinHeadroomPct, 0) || c.HarvestMinHeadroomPct < 0 || c.HarvestMinHeadroomPct > 100 {
+		return c, errors.New("harvest_min_headroom_pct must be finite 0..100")
+	}
+	if math.IsNaN(c.HarvestWindowHours) || math.IsInf(c.HarvestWindowHours, 0) || c.HarvestWindowHours < 0 {
+		return c, errors.New("harvest_window_hours must be finite and >= 0")
 	}
 	if ttl, err := time.ParseDuration(c.UsageCacheTTL); err != nil || ttl < 0 {
 		return c, errors.New("invalid usage_cache_ttl")
