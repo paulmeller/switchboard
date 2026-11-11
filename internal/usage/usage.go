@@ -1,0 +1,197 @@
+// Package usage isolates allowlisted read-only commands from task execution.
+package usage
+
+import (
+	"context"
+	"encoding/json"
+	"errors"
+	"io"
+	"math"
+	"os"
+	"path/filepath"
+	"time"
+	_ "time/tzdata"
+)
+
+type Row struct {
+	Tool             string         `json:"tool"`
+	Profile          string         `json:"profile"`
+	Account          *string        `json:"account"`
+	Plan             *string        `json:"plan"`
+	LoginOK          *bool          `json:"login_ok"`
+	WeeklyUsedPct    *float64       `json:"weekly_used_pct"`
+	WeeklyResetsAt   *string        `json:"weekly_resets_at"`
+	FiveHourUsedPct  *float64       `json:"five_hour_used_pct"`
+	FiveHourResetsAt *string        `json:"five_hour_resets_at"`
+	Extra            map[string]any `json:"extra"`
+	Source           *string        `json:"source"`
+	Error            *string        `json:"error"`
+}
+type Report struct {
+	SchemaVersion int    `json:"schema_version"`
+	CheckedAt     string `json:"checked_at"`
+	Accounts      []Row  `json:"accounts"`
+}
+
+func Defaults() []Row {
+	rows := []Row{}
+	for _, v := range [][3]string{{"claude", "work", "Ultra"}, {"claude", "personal", "Ultra"}, {"codex", "work", "Team"}, {"codex", "personal", "Plus"}, {"agy", "gemini", "Gemini pool"}, {"agy", "claude-gpt", "Claude/GPT pool"}, {"grok", "cli", ""}, {"claude", "plain", ""}} {
+		r := Row{Tool: v[0], Profile: v[1], Extra: map[string]any{}}
+		if v[2] != "" {
+			p := v[2]
+			r.Plan = &p
+		}
+		rows = append(rows, r)
+	}
+	return rows
+}
+
+type Data struct {
+	Source      string         `json:"-"`
+	Notice      string         `json:"-"`
+	Extra       map[string]any `json:"-"`
+	ObservedAt  time.Time      `json:"observed_at"`
+	LoginOK     *bool          `json:"login_ok"`
+	Weekly      *float64       `json:"weekly_used_pct"`
+	WeeklyReset *string        `json:"weekly_resets_at"`
+	Five        *float64       `json:"five_hour_used_pct"`
+	FiveReset   *string        `json:"five_hour_resets_at"`
+}
+type Source interface {
+	Read(context.Context, string, string) (Data, error)
+}
+
+// Snapshot reads only dedicated numeric snapshots, never provider files or sessions.
+type Snapshot struct{ Dir string }
+
+func (s Snapshot) Read(ctx context.Context, tool, profile string) (Data, error) {
+	var d Data
+	if ctx.Err() != nil {
+		return d, ctx.Err()
+	}
+	path := filepath.Join(s.Dir, tool+"-"+profile+".json")
+	before, e := os.Lstat(path)
+	if e != nil || !before.Mode().IsRegular() {
+		return d, errors.New("no verified safe source; quota unavailable")
+	}
+	f, e := os.Open(path)
+	if e != nil {
+		return d, errors.New("no verified safe source; quota unavailable")
+	}
+	defer f.Close()
+	after, e := f.Stat()
+	if e != nil || !os.SameFile(before, after) {
+		return d, errors.New("invalid normalized snapshot")
+	}
+	dec := json.NewDecoder(io.LimitReader(f, 8192))
+	dec.DisallowUnknownFields()
+	if dec.Decode(&d) != nil {
+		return Data{}, errors.New("invalid normalized snapshot")
+	}
+	var extra any
+	if dec.Decode(&extra) != io.EOF {
+		return Data{}, errors.New("invalid normalized snapshot")
+	}
+	return d, nil
+}
+
+func valid(d Data, now time.Time) bool {
+	if d.ObservedAt.IsZero() || (d.Source == "" && d.ObservedAt.After(now)) {
+		return false
+	}
+	for _, p := range []*float64{d.Weekly, d.Five} {
+		if p != nil && (*p < 0 || *p > 100 || math.IsNaN(*p) || math.IsInf(*p, 0)) {
+			return false
+		}
+	}
+	for _, p := range []*string{d.WeeklyReset, d.FiveReset} {
+		if p != nil {
+			if _, e := time.Parse(time.RFC3339, *p); e != nil {
+				return false
+			}
+		}
+	}
+	return d.LoginOK != nil || d.Weekly != nil || d.Five != nil || d.WeeklyReset != nil || d.FiveReset != nil
+}
+
+func sydneyTime(t time.Time) string {
+	loc, _ := time.LoadLocation("Australia/Sydney")
+	return t.In(loc).Format(time.RFC3339)
+}
+
+func sydneyReset(value *string) *string {
+	if value == nil {
+		return nil
+	}
+	// Collect validates explicit timezone-bearing timestamps before normalization.
+	t, _ := time.Parse(time.RFC3339, *value)
+	normalized := sydneyTime(t)
+	return &normalized
+}
+
+func Collect(ctx context.Context, source Source, timeout time.Duration, now time.Time) (Report, int) {
+	return CollectRows(ctx, source, timeout, now, Defaults())
+}
+
+func CollectRows(ctx context.Context, source Source, timeout time.Duration, now time.Time, rows []Row) (Report, int) {
+	report := Report{1, sydneyTime(now), rows}
+	success := 0
+	for i := range report.Accounts {
+		r := &report.Accounts[i]
+		c, cancel := context.WithTimeout(ctx, timeout)
+		type result struct {
+			d Data
+			e error
+		}
+		ch := make(chan result, 1)
+		go func(tool, profile string) { d, e := source.Read(c, tool, profile); ch <- result{d, e} }(r.Tool, r.Profile)
+		var got result
+		select {
+		case got = <-ch:
+		case <-c.Done():
+			got.e = c.Err()
+		}
+		cancel()
+		if got.e != nil || !valid(got.d, now) {
+			msg := "no verified safe source; quota unavailable"
+			if errors.Is(got.e, errGrokUnavailable) {
+				msg = errGrokUnavailable.Error()
+			}
+			if errors.Is(got.e, errGrokSchema) {
+				msg = errGrokSchema.Error()
+			}
+			if errors.Is(got.e, context.DeadlineExceeded) {
+				msg = "usage source timed out"
+			}
+			r.Error = &msg
+			continue
+		}
+		d := got.d
+		r.LoginOK = d.LoginOK
+		r.WeeklyUsedPct = d.Weekly
+		r.WeeklyResetsAt = sydneyReset(d.WeeklyReset)
+		r.FiveHourUsedPct = d.Five
+		r.FiveHourResetsAt = sydneyReset(d.FiveReset)
+		src := d.Source
+		if src == "" {
+			src = "cached normalized snapshot"
+		}
+		r.Source = &src
+		if d.Source == "" {
+			r.Extra["observed_at"] = sydneyTime(d.ObservedAt)
+			r.Extra["age_seconds"] = int64(now.Sub(d.ObservedAt).Seconds())
+		} else {
+			for k, v := range d.Extra {
+				r.Extra[k] = v
+			}
+			if d.Notice != "" {
+				r.Error = &d.Notice
+			}
+		}
+		success++
+	}
+	if success == 0 {
+		return report, 1
+	}
+	return report, 0
+}

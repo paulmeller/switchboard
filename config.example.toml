@@ -1,0 +1,57 @@
+# Built-in accounts: claude/work, claude/personal, codex/work, codex/personal
+# Defaults/rules prefer only a family; legacy tool/profile values ignore profile.
+default = "codex"
+# Hard pin (optional): skips Jev and usage selection; unavailable exits 3.
+# pin = "codex/work"
+usage_exhausted_pct = 95
+usage_cache_ttl = "60s"
+# Both floors are finite 0..1; TOML-only settings in v0.1.
+account_floor = 0.5
+difficulty_floor = 0.5
+# Legacy confidence maps to account_floor only if account_floor is omitted.
+# Explicit account_floor wins; omitting both now defaults to 0.5, formerly 0.8.
+# confidence = 0.8
+
+[[rules]]
+contains = "design"
+account = "claude/work"
+
+[[rules]]
+contains = "test"
+account = "codex"
+
+# Optional classifier; no key means deterministic rules. Provider defaults to
+# typesafe: https://api.typesafe.ai, jev-1.14.0, TYPESAFE_API_KEY.
+# Set provider = "off" to disable external classification.
+# WARNING: routing dry-run and classify also send task text when a classifier key is present.
+# Overrides (flags > env > TOML > defaults):
+# --classifier-provider / SB_CLASSIFIER_PROVIDER
+# --classifier-base-url / SB_CLASSIFIER_BASE_URL
+# --classifier-model / SB_CLASSIFIER_MODEL
+#
+# [classifier]
+# provider = "ai-gateway"
+# base_url = "https://ai-gateway.vercel.sh/typesafe"
+# model = "typesafe-ai/jev-1.14.0"
+# api_key_env = "AI_GATEWAY_API_KEY"
+# api_key_file = ""     # optional path; ~/ expands to home
+# api_key_keychain = "" # optional macOS generic-password service name
+# Keys: env, then file, then macOS Keychain; whitespace is trimmed.
+# Missing, unreadable or empty sources fall through, then rules apply.
+
+# Family criteria: provided fields replace individual built-in fields.
+# Unknown IDs allowed; only available launchable families enter Choice.
+# [accounts.codex]
+# what = "Implementation, tests, refactors and everyday coding"
+# not_for = "Design, architecture, writing and harder reasoning belong to Claude"
+# examples = ["fix a flaky test", "refactor a scraper", "add a CLI command"]
+
+# Routed tasks, including dry-run/classify, append a local JSONL decision.
+# $XDG_DATA_HOME/switchboard/decisions.jsonl (default ~/.local/share/switchboard).
+# Directory 0700, files 0600. Rotate to one .1 before exceeding max_bytes.
+# Use --no-log to suppress routing writes. Explicit feedback always writes.
+# Exec exit/duration and dry-run timing are null. Pins supply implicit labels.
+[log]
+enabled = true
+max_bytes = 5242880 # positive integer; a single line is never split
+redact_task = false # true: task=null, SHA-256 of raw task bytes retained
