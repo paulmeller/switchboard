@@ -10,14 +10,14 @@ import (
 // Rules chooses the first configured preference still present in eligible.
 type Rules struct{ Config config.Config }
 
-func (r Rules) Choose(_ context.Context, task string, eligible []provider.Account, _ float64) (provider.Account, float64, bool) {
+func (r Rules) Choose(_ context.Context, task string, eligible []provider.Account, _ float64) Result {
 	order, _ := r.Config.Order(task)
 	for _, candidate := range order {
 		for _, account := range eligible {
 			if candidate == account {
-				return candidate, 0, true
+				return Result{Account: candidate, OK: true}
 			}
 		}
 	}
-	return provider.Account{}, 0, false
+	return Result{}
 }

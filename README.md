@@ -16,6 +16,7 @@ Do not install over existing launchers.
 ./build/sb status --json
 ./build/sb doctor --plain
 ./build/sb --dry-run 'fix a flaky test'
+./build/sb classify --json 'fix a flaky test'
 ./build/sb run 'implement the parser'
 ./build/sb cooldown codex/work --duration 1h
 ./build/sb usage --json
@@ -50,7 +51,7 @@ it sends task text to Jev and prints the pick, reason and confidence.
 Copy `config.example.toml` manually to
 $XDG_CONFIG_HOME/switchboard/config.toml (default ~/.config/switchboard/config.toml).
 Supported overrides: `--config` > SB_CONFIG > default config path; `--account` >
-SB_ACCOUNT > TOML `default` > codex/work. TOML also supports `confidence` (0..1)
+SB_ACCOUNT > TOML `default` > codex/work. TOML also supports `account_floor` and `difficulty_floor` (finite 0..1, both default 0.5), plus legacy `confidence` (0..1)
 and ordered `[[rules]]` containing `contains` and `account`. Account values are
 claude/work, claude/personal, codex/work, codex/personal. Invalid config fails
 before task launch. Unknown config keys are rejected.
@@ -77,16 +78,40 @@ discard diagnostics. No key means rules only; `off` never resolves a key or call
 Jev. Doctor reports the configured provider and key presence only, using readable
 file presence or a Keychain lookup without password flags; it makes no repairs.
 
-**Both routing and routing dry-run send task text externally when a classifier
-key is configured.** Requests POST to `{base_url}/v1/systemone`, with Bearer
-authentication, the configured model, typed Choice/Score questions and a
-three-second bound. Invalid, low-confidence, wrong-model or ineligible answers
-fall back to deterministic rules. Model echoes accept the equivalent short or
-`typesafe-ai/`-prefixed ID. Dry-run JSON includes `reason` and `confidence`
-(number 0..1 for Jev, null for rules); plain output shows confidence when present.
-Status, doctor and usage never call Jev. No live classification was used in tests.
-The adapter follows the [System One wire schema](https://api.typesafe.ai/openapi.json)
-and [Vercel's TypeSafe-compatible API](https://vercel.com/docs/ai-gateway/sdks-and-apis/typesafe).
+**Routing, dry-run and `classify` send task text externally when a classifier
+key is configured.** `sb classify --json "<task>"` uses routing eligibility and
+cooldowns but never launches, creates homes or writes state. Status, doctor and
+usage never call Jev. Requests use the pinned provider models above and a
+three-second bound; model echoes accept equivalent short/prefixed IDs.
+
+Choice uses contrastive objects (`what`, `not_for`, `examples`) for eligible
+launch accounts only. Defaults distinguish company vs personal work and everyday
+Codex implementation vs Claude design, writing and harder reasoning. Edit fields
+with quoted TOML tables such as `[accounts."codex/work"]`; each provided field
+replaces its built-in value. Unknown account IDs are allowed for future use;
+AGY and Grok defaults are usage-only and never become routing options. Empty
+merged `what` and unknown fields are invalid.
+
+Score levels describe small local changes, scoped features/bugs/refactors, and
+open-ended architecture or cross-system high-risk changes, each with examples.
+Difficulty only informs reporting; it never changes account selection.
+`probabilities[choice] >= account_floor` accepts an eligible Jev pick regardless
+of Choice confidence. Difficulty is shown only when its own confidence meets
+`difficulty_floor`; missing confidence leaves difficulty null. Invalid responses
+fall back to rules. Floors are TOML settings in v0.1. The new account default is
+0.5, replacing the old implicit 0.8. Explicit `account_floor` wins over legacy
+`confidence`; otherwise an explicitly supplied `confidence` maps to
+`account_floor`, including zero. Difficulty defaults independently to 0.5.
+
+Classify and routing dry-run JSON include tool, profile, reason, source, why,
+probability, confidence, difficulty and difficulty_confidence. Rules have null
+account probability/confidence. A valid response also appears under `jev` with
+raw normalized choice and numbers even when below the floor; no HTTP bodies or
+keys are exposed. Plain output is tab-separated pick, source, probability,
+reason, why. Tests use fake transports only; no live classification was performed.
+See TypeSafe's [contrastive criteria cookbook](https://docs.typesafe.ai/concepts/how-to-build-with-system-one),
+[probability routing](https://docs.typesafe.ai/patterns/probability-routing) and
+[confidence routing](https://docs.typesafe.ai/patterns/confidence-routing).
 
 Cooldowns are explicit local reports, not automatic 429 detection. Exec replaces
 sb, so sb cannot observe subsequent tool output or exits. State is written

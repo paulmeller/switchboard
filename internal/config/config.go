@@ -60,10 +60,13 @@ func (c *Classifier) Validate() error {
 }
 
 type Config struct {
-	Classifier Classifier `toml:"classifier"`
-	Default    string     `toml:"default"`
-	Confidence float64    `toml:"confidence"`
-	Rules      []Rule     `toml:"rules"`
+	Classifier      Classifier          `toml:"classifier"`
+	Default         string              `toml:"default"`
+	Confidence      float64             `toml:"confidence"`
+	AccountFloor    float64             `toml:"account_floor"`
+	DifficultyFloor float64             `toml:"difficulty_floor"`
+	Accounts        map[string]Criteria `toml:"accounts"`
+	Rules           []Rule              `toml:"rules"`
 }
 
 func Path(home, xdg string) string {
@@ -83,11 +86,21 @@ func ParseAccount(s string) (provider.Account, error) {
 }
 
 func Load(path, envDefault, flagDefault string, overrides ...Classifier) (Config, error) {
-	c := Config{Default: "codex/work", Confidence: 0.8}
+	c := Config{Default: "codex/work", AccountFloor: 0.5, DifficultyFloor: 0.5}
 	b, e := os.ReadFile(path)
 	if e == nil {
 		if toml.NewDecoder(bytes.NewReader(b)).DisallowUnknownFields().Decode(&c) != nil {
 			return c, errors.New("invalid TOML config")
+		}
+		var presence struct {
+			Confidence   *float64 `toml:"confidence"`
+			AccountFloor *float64 `toml:"account_floor"`
+		}
+		if toml.Unmarshal(b, &presence) != nil {
+			return c, errors.New("invalid TOML config")
+		}
+		if presence.AccountFloor == nil && presence.Confidence != nil {
+			c.AccountFloor = *presence.Confidence
 		}
 	} else if !os.IsNotExist(e) {
 		return c, errors.New("cannot read config")
@@ -115,6 +128,34 @@ func Load(path, envDefault, flagDefault string, overrides ...Classifier) (Config
 	if _, e = ParseAccount(c.Default); e != nil {
 		return c, e
 	}
+	for _, floor := range []float64{c.AccountFloor, c.DifficultyFloor} {
+		if math.IsNaN(floor) || math.IsInf(floor, 0) || floor < 0 || floor > 1 {
+			return c, errors.New("floors must be 0..1")
+		}
+	}
+	defaults := DefaultCriteria()
+	var fields struct {
+		Accounts map[string]map[string]any `toml:"accounts"`
+	}
+	_ = toml.Unmarshal(b, &fields)
+	for id, override := range c.Accounts {
+		merged := defaults[id]
+		table := fields.Accounts[id]
+		if _, ok := table["what"]; ok {
+			merged.What = override.What
+		}
+		if _, ok := table["not_for"]; ok {
+			merged.NotFor = override.NotFor
+		}
+		if _, ok := table["examples"]; ok {
+			merged.Examples = override.Examples
+		}
+		if strings.TrimSpace(merged.What) == "" {
+			return c, errors.New("account what must not be empty")
+		}
+		defaults[id] = merged
+	}
+	c.Accounts = defaults
 	if math.IsNaN(c.Confidence) || math.IsInf(c.Confidence, 0) || c.Confidence < 0 || c.Confidence > 1 {
 		return c, errors.New("confidence must be 0..1")
 	}

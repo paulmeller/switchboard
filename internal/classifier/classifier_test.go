@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
+	"strings"
 	"testing"
 
 	"switchboard/internal/config"
@@ -38,6 +39,26 @@ func TestJevWireAndFallback(t *testing.T) {
 					if questions["difficulty"].(map[string]any)["type"] != "score" || questions["account"].(map[string]any)["type"] != "choice" {
 						t.Error("typed questions")
 					}
+					criteria := questions["account"].(map[string]any)["criteria"].(map[string]any)
+					for _, value := range criteria {
+						option := value.(map[string]any)
+						if option["what"] == "" || option["not_for"] == "" || option["examples"] == nil {
+							t.Fatal("account criteria")
+						}
+					}
+					encoded, _ := json.Marshal(criteria)
+					if criteria["codex/work"].(map[string]any)["what"] != "Custom implementation" {
+						t.Fatal("override missing on wire")
+					}
+					if strings.Contains(string(encoded), "Coding account") {
+						t.Fatal("generic criteria")
+					}
+					for _, value := range questions["difficulty"].(map[string]any)["criteria"].([]any) {
+						level := value.(map[string]any)
+						if level["what"] == "" || level["examples"] == nil {
+							t.Fatal("difficulty criteria")
+						}
+					}
 					if mode == "failure" {
 						w.WriteHeader(500)
 						return
@@ -69,21 +90,25 @@ func TestJevWireAndFallback(t *testing.T) {
 					if mode == "missing-probabilities" {
 						probs = nil
 					}
-					json.NewEncoder(w).Encode(map[string]any{"model": model, "answers": map[string]any{"account": map[string]any{"type": "choice", "choice": choice, "confidence": confidence, "probabilities": probs}, "difficulty": map[string]any{"type": "score", "score": 1, "confidence": 0.99, "probabilities": map[string]float64{"0": 0.1, "1": 0.8, "2": 0.1}, "legend": map[string]string{"0": "routine", "1": "complex", "2": "advanced"}}}})
+					json.NewEncoder(w).Encode(map[string]any{"model": model, "answers": map[string]any{"account": map[string]any{"type": "choice", "choice": choice, "confidence": confidence, "probabilities": probs}, "difficulty": map[string]any{"type": "score", "score": 1, "confidence": 0.99, "probabilities": map[string]float64{"0": 0.1, "1": 0.8, "2": 0.1}, "legend": map[string]any{"0": map[string]any{"what": "small"}, "1": map[string]any{"what": "scoped"}, "2": map[string]any{"what": "design"}}}}})
 				})
 				client := &http.Client{Transport: fakeTransport(func(r *http.Request) (*http.Response, error) {
 					rec := httptest.NewRecorder()
 					handler.ServeHTTP(rec, r)
 					return rec.Result(), nil
 				})}
-				j := Jev{Client: client, Endpoint: conf.BaseURL + "/v1/systemone", Model: conf.Model}
+				criteria := config.DefaultCriteria()
+				custom := criteria["codex/work"]
+				custom.What = "Custom implementation"
+				criteria["codex/work"] = custom
+				j := Jev{Criteria: criteria, Client: client, Endpoint: conf.BaseURL + "/v1/systemone", Model: conf.Model}
 				eligible := []provider.Account{{Tool: "codex", Profile: "work"}}
-				if _, _, ok := j.Choose(context.Background(), "fake task", eligible, 0.8); ok || calls != 0 {
+				if result := j.Choose(context.Background(), "fake task", eligible, 0.8); result.OK || calls != 0 {
 					t.Fatal("no-key call")
 				}
 				j.Key = "fake-test-value"
-				_, _, ok := j.Choose(context.Background(), "fake task", eligible, 0.8)
-				if ok != (mode == "ok" || mode == "alias") || calls != 1 {
+				result := j.Choose(context.Background(), "fake task", eligible, 0.8)
+				if result.OK != (mode == "ok" || mode == "alias" || mode == "low") || calls != 1 {
 					t.Fatal("fallback")
 				}
 			})

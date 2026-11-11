@@ -42,7 +42,10 @@ type CLI struct {
 	Doctor             struct{} `cmd:"" help:"Check local prerequisites without changing them."`
 	Usage              struct{} `cmd:"" help:"Read safe live usage; unknown values remain null."`
 	Schema             struct{} `cmd:"" help:"Describe actual commands and output contracts."`
-	Run                struct {
+	Classify           struct {
+		Task string `arg:"" help:"Task to classify without launching."`
+	} `cmd:"" help:"Calibrate routing; may send task text to Jev."`
+	Run struct {
 		Task string `arg:"" help:"Task prompt (quote as one argument)."`
 	} `cmd:"" help:"Route a task and exec the selected tool."`
 	Cooldown struct {
@@ -80,7 +83,7 @@ func (a *App) value(k string) string {
 }
 func (a *App) fail(code int, msg string) int { fmt.Fprintln(a.Err, "sb: "+msg); return code }
 func normalize(args []string) []string {
-	known := map[string]bool{"run": true, "status": true, "doctor": true, "usage": true, "schema": true, "claude": true, "codex": true, "cooldown": true}
+	known := map[string]bool{"classify": true, "run": true, "status": true, "doctor": true, "usage": true, "schema": true, "claude": true, "codex": true, "cooldown": true}
 	for i := 0; i < len(args); i++ {
 		v := args[i]
 		if v == "--config" || v == "--account" || v == "--classifier-provider" || v == "--classifier-base-url" || v == "--classifier-model" {
@@ -177,7 +180,7 @@ parsedVersion:
 	name := base[0]
 	background := context.Background()
 	if name == "schema" {
-		return a.emit(c, map[string]any{"schema_version": 1, "commands": schemaNode(p.Model.Node), "exit_codes": map[string]int{"success": 0, "failure": 1, "invalid_input": 2, "no_eligible_account": 3}, "usage_schema_version": 1, "usage_tool": "extensible string", "usage_contract": map[string]any{
+		return a.emit(c, map[string]any{"schema_version": 1, "commands": schemaNode(p.Model.Node), "exit_codes": map[string]int{"success": 0, "failure": 1, "invalid_input": 2, "no_eligible_account": 3}, "classification_contract": map[string]string{"source": "jev|rules", "probability": "chosen account probability|null", "confidence": "Choice confidence|null", "difficulty": "0..2 when independently confident|null", "difficulty_confidence": "0..1|null", "jev": "raw normalized classification when valid", "why": "safe decision explanation"}, "usage_schema_version": 1, "usage_tool": "extensible string", "usage_contract": map[string]any{
 			"schema_version": 1, "row_count": 8, "checked_at": "RFC3339 Australia/Sydney",
 			"entry_keys": map[string]string{"tool": "extensible string", "profile": "string", "account": "string|null", "plan": "configured string|null", "login_ok": "boolean|null", "weekly_used_pct": "number 0..100|null", "weekly_resets_at": "RFC3339|null", "five_hour_used_pct": "number 0..100|null", "five_hour_resets_at": "RFC3339|null", "extra": "object", "source": "string|null", "error": "safe string|null"}, "sources": "live read-only Codex RPC, Claude login, Grok usage; unsupported quotas null", "all_source_failure_exit": 1, "partial_success_exit": 0,
 		}, "precedence": []string{"flags", "environment", "config", "defaults"}}, []string{"sb schema --json"})
@@ -315,6 +318,10 @@ parsedVersion:
 		}
 		return a.emit(c, map[string]any{"account": account.ID(), "until": until.Format(time.RFC3339), "dry_run": c.DryRun}, []string{account.ID() + "\tcooldown reported"})
 	}
+	if name == "classify" {
+		c.Run.Task = c.Classify.Task
+		c.DryRun = true
+	}
 	if strings.TrimSpace(c.Run.Task) == "" {
 		return a.fail(2, "task must not be empty")
 	}
@@ -335,32 +342,60 @@ parsedVersion:
 	if len(eligible) == 0 {
 		return a.fail(3, "no eligible signed-in account; check sb status and local cooldowns")
 	}
-	pick, _, _ := (classifier.Rules{Config: conf}).Choose(background, c.Run.Task, eligible, conf.Confidence)
+	pick := (classifier.Rules{Config: conf}).Choose(background, c.Run.Task, eligible, conf.AccountFloor).Account
 	if pick != order[0] {
 		reason = "first eligible fallback"
 	}
-	var confidence *float64
+	source, why := "rules", "rules: classifier off"
+	var raw classifier.Result
 	if conf.Classifier.Provider != "off" {
 		classify := a.Classifier
+		why = "rules: no key"
 		if classify == nil {
-			classify = classifier.Jev{Key: (classifier.Keys{Home: a.Home, Env: a.value}).Resolve(conf.Classifier), Endpoint: strings.TrimRight(conf.Classifier.BaseURL, "/") + "/v1/systemone", Model: conf.Classifier.Model}
+			key := (classifier.Keys{Home: a.Home, Env: a.value}).Resolve(conf.Classifier)
+			if key != "" {
+				classify = classifier.Jev{Key: key, Criteria: conf.Accounts, Endpoint: strings.TrimRight(conf.Classifier.BaseURL, "/") + "/v1/systemone", Model: conf.Classifier.Model}
+			}
 		}
-		if chosen, score, ok := classify.Choose(background, c.Run.Task, eligible, conf.Confidence); ok && score >= conf.Confidence && score <= 1 {
-			for _, candidate := range eligible {
-				if candidate == chosen {
-					pick = chosen
-					reason = "Jev classification"
-					confidence = &score
-					break
+		if classify != nil {
+			raw = classify.Choose(background, c.Run.Task, eligible, conf.AccountFloor)
+			why = "rules: invalid classifier response"
+			if raw.OK && raw.Probability != nil && *raw.Probability >= 0 && *raw.Probability <= 1 {
+				why = "rules: account probability below floor"
+				if *raw.Probability >= conf.AccountFloor {
+					for _, candidate := range eligible {
+						if candidate == raw.Account {
+							pick = candidate
+							reason = "Jev classification"
+							source = "jev"
+							why = reason
+							break
+						}
+					}
 				}
 			}
 		}
 	}
-	result := map[string]any{"tool": pick.Tool, "profile": pick.Profile, "reason": reason, "confidence": confidence}
-	line := pick.ID() + "\t" + reason
-	if confidence != nil {
-		line += fmt.Sprintf("\tconfidence=%g", *confidence)
+	var probability, confidence, difficulty, difficultyConfidence *float64
+	if raw.OK {
+		difficultyConfidence = raw.DifficultyConfidence
+		if source == "jev" {
+			probability, confidence = raw.Probability, raw.Confidence
+		}
+		if raw.DifficultyConfidence != nil && *raw.DifficultyConfidence >= conf.DifficultyFloor {
+			difficulty = raw.Difficulty
+		}
 	}
+	result := map[string]any{"tool": pick.Tool, "profile": pick.Profile, "reason": reason, "source": source, "why": why, "probability": probability, "confidence": confidence, "difficulty": difficulty, "difficulty_confidence": difficultyConfidence}
+	if raw.OK {
+		result["jev"] = map[string]any{"choice": raw.Account.ID(), "probability": raw.Probability, "confidence": raw.Confidence, "difficulty": raw.Difficulty, "difficulty_confidence": raw.DifficultyConfidence}
+	}
+	probabilityText := "null"
+	if probability != nil {
+		probabilityText = fmt.Sprintf("%g", *probability)
+	}
+	line := pick.ID() + "\t" + source + "\t" + probabilityText + "\t" + reason + "\t" + why
+
 	if c.DryRun {
 		return a.emit(c, result, []string{line})
 	}

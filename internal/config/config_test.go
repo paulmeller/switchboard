@@ -57,3 +57,38 @@ func TestClassifierConfig(t *testing.T) {
 		t.Fatal("override precedence")
 	}
 }
+
+func TestFloorsAndCriteria(t *testing.T) {
+	for _, tc := range []struct {
+		text  string
+		floor float64
+		bad   bool
+	}{
+		{"", .5, false},
+		{"confidence=0.8", .8, false},
+		{"confidence=0.8\naccount_floor=0", 0, false},
+		{"difficulty_floor=inf", .5, true},
+		{"[accounts.\"future/id\"]\nwhat='Future tool'", .5, false},
+		{"[accounts.\"codex/work\"]\nwhat=''", .5, true},
+		{"[accounts.agy]\nunknown=true", .5, true},
+	} {
+		p := filepath.Join(t.TempDir(), "config.toml")
+		os.WriteFile(p, []byte(tc.text), 0o600)
+		c, err := Load(p, "", "")
+		if tc.bad {
+			if err == nil {
+				t.Fatal("invalid config accepted")
+			}
+			continue
+		}
+		if err != nil || c.AccountFloor != tc.floor {
+			t.Fatalf("floor: %v %g", err, c.AccountFloor)
+		}
+	}
+	p := filepath.Join(t.TempDir(), "config.toml")
+	os.WriteFile(p, []byte("[accounts.\"codex/work\"]\nwhat='Custom implementation'\nexamples=[]"), 0o600)
+	c, err := Load(p, "", "")
+	if err != nil || c.Accounts["codex/work"].What != "Custom implementation" || c.Accounts["codex/work"].NotFor == "" || len(c.Accounts["codex/work"].Examples) != 0 {
+		t.Fatal("field merge")
+	}
+}

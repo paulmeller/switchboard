@@ -1,6 +1,11 @@
 # Built-in accounts: claude/work, claude/personal, codex/work, codex/personal
 default = "codex/work"
-confidence = 0.8
+# Both floors are finite 0..1; TOML-only settings in v0.1.
+account_floor = 0.5
+difficulty_floor = 0.5
+# Legacy confidence maps to account_floor only if account_floor is omitted.
+# Explicit account_floor wins; omitting both now defaults to 0.5, formerly 0.8.
+# confidence = 0.8
 
 [[rules]]
 contains = "design"
@@ -13,7 +18,7 @@ account = "codex/personal"
 # Optional classifier; no key means deterministic rules. Provider defaults to
 # typesafe: https://api.typesafe.ai, jev-1.14.0, TYPESAFE_API_KEY.
 # Set provider = "off" to disable external classification.
-# WARNING: routing dry-run also sends task text when a classifier key is present.
+# WARNING: routing dry-run and classify also send task text when a classifier key is present.
 # Overrides (flags > env > TOML > defaults):
 # --classifier-provider / SB_CLASSIFIER_PROVIDER
 # --classifier-base-url / SB_CLASSIFIER_BASE_URL
@@ -28,3 +33,13 @@ account = "codex/personal"
 # api_key_keychain = "" # optional macOS generic-password service name
 # Keys: env, then file, then macOS Keychain; whitespace is trimmed.
 # Missing, unreadable or empty sources fall through, then rules apply.
+
+# Contrastive criteria: provided fields replace built-in fields.
+# Unknown IDs are allowed, but only eligible launch accounts enter Choice.
+# AGY/Grok remain usage-only; empty merged what is invalid.
+# https://docs.typesafe.ai/concepts/how-to-build-with-system-one
+# https://docs.typesafe.ai/patterns/probability-routing
+# [accounts."codex/work"]
+# what = "Implementation, tests, refactors and everyday coding in Five V repos"
+# not_for = "Personal products; work design and writing belong to claude/work"
+# examples = ["fix a flaky test in a Five V service", "refactor a work module"]

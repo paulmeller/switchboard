@@ -10,10 +10,10 @@ import (
 	"testing"
 	"time"
 
+	"switchboard/internal/classifier"
+	"switchboard/internal/provider"
 	"switchboard/internal/state"
 	"switchboard/internal/usage"
-
-	"switchboard/internal/provider"
 )
 
 type fakeProbe struct {
@@ -118,22 +118,24 @@ func TestDryCooldownAndFallback(t *testing.T) {
 
 type forbiddenClassifier struct{ t *testing.T }
 
-func (f forbiddenClassifier) Choose(context.Context, string, []provider.Account, float64) (provider.Account, float64, bool) {
+func (f forbiddenClassifier) Choose(context.Context, string, []provider.Account, float64) classifier.Result {
 	f.t.Fatal("usage invoked classifier")
-	return provider.Account{}, 0, false
+	return classifier.Result{}
 }
 
 type fakeClassifier struct{ calls int }
 
-func (f *fakeClassifier) Choose(context.Context, string, []provider.Account, float64) (provider.Account, float64, bool) {
+func (f *fakeClassifier) Choose(context.Context, string, []provider.Account, float64) classifier.Result {
 	f.calls++
-	return provider.Account{Tool: "codex", Profile: "work"}, 0.95, true
+	p := 0.95
+	return classifier.Result{Account: provider.Account{Tool: "codex", Profile: "work"}, Probability: &p, Confidence: &p, OK: true}
 }
 
 func TestRoutingDryRunClassifier(t *testing.T) {
 	for _, args := range [][]string{
 		{"--dry-run", "fake task", "--json"},
 		{"run", "--dry-run", "fake task", "--json"},
+		{"classify", "fake task", "--json"},
 		{"--dry-run", "--plain", "fake task"},
 	} {
 		var out, diag bytes.Buffer
@@ -185,5 +187,40 @@ func TestDoctorClassifier(t *testing.T) {
 	a.Run([]string{"doctor", "--json"})
 	if !bytes.Contains(out.Bytes(), []byte("classifier key present")) || bytes.Contains(out.Bytes(), []byte("fake-test-value")) {
 		t.Fatal("doctor key presence")
+	}
+}
+
+type calibrationClassifier struct{ probability float64 }
+
+func (f calibrationClassifier) Choose(context.Context, string, []provider.Account, float64) classifier.Result {
+	confidence, difficulty, dc := 0.3, 1.2, 0.2
+	return classifier.Result{Account: provider.Account{Tool: "claude", Profile: "personal"}, Probability: &f.probability, Confidence: &confidence, Difficulty: &difficulty, DifficultyConfidence: &dc, OK: true}
+}
+
+func TestCalibrationProbabilityAndDifficulty(t *testing.T) {
+	for _, command := range []string{"classify", "run"} {
+		for _, probability := range []float64{0.55, 0.4} {
+			var out, diag bytes.Buffer
+			home := t.TempDir()
+			a := App{Out: &out, Err: &diag, Home: home, Probe: &fakeProbe{signed: true}, Classifier: calibrationClassifier{probability}, Execute: func(string, []string, []string) error { t.Fatal("calibration launched"); return nil }}
+			if a.Run([]string{command, "--dry-run", "--json", "fake task"}) != 0 {
+				t.Fatal("calibration failed")
+			}
+			var result map[string]any
+			if json.Unmarshal(out.Bytes(), &result) != nil {
+				t.Fatal("invalid JSON")
+			}
+			source := "rules"
+			if probability >= .5 {
+				source = "jev"
+			}
+			if result["source"] != source || result["difficulty"] != nil || result["jev"].(map[string]any)["probability"] != probability {
+				t.Fatal("decoupled gates or raw numbers")
+			}
+			entries, _ := os.ReadDir(home)
+			if len(entries) != 0 {
+				t.Fatal("calibration wrote files")
+			}
+		}
 	}
 }

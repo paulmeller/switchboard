@@ -42,21 +42,39 @@ without -w/-g); off needs no key. No automatic writes.
 POST `{base_url}/v1/systemone` after trimming trailing slashes, with
 Content-Type application/json, Bearer key, configured model and typed Choice/Score
 questions/answers. Three-second bound. No key => no HTTP call. Errors, wrong
-model, invalid response, ineligible choice or confidence below configured floor
+model, invalid response, ineligible choice or chosen account probability below account_floor
 => deterministic rules. Accept the configured response model or its equivalent
 with/without the `typesafe-ai/` prefix. Never echo keys or raw responses.
 No Decision fallbacks, providerOptions or OpenAI response emulation.
 
-Routing dry-runs intentionally classify too: both `sb --dry-run "<task>"` and
-`sb run --dry-run "<task>"` send task text externally when a classifier key is
-configured and provider is not off. They still never launch, create homes or
-write state. Print pick, reason and confidence; JSON confidence is 0..1 on Jev
-success and null for rules, with reason "Jev classification" on success. Plain
-output shows confidence when present. Status, doctor and usage never call Jev.
-Tests use only fake transports/httptest and stub Keychain; no live classification.
-References: https://docs.typesafe.ai/concepts/system-one,
-https://api.typesafe.ai/openapi.json and
-https://vercel.com/docs/ai-gateway/sdks-and-apis/typesafe.
+Choice criteria are contrastive objects with what, not_for and examples, merged
+from built-ins then per-field `[accounts."id"]` overrides. Unknown IDs are allowed,
+unknown fields are rejected, empty merged what is invalid. Only eligible launch
+accounts enter Choice; agy/grok defaults remain usage-only. Score uses three
+situation objects with examples: small local changes; scoped features, bugs and
+refactors; open-ended architecture/cross-system high-risk changes. Object legends
+are accepted; score remains 0..2 with a valid 0/1/2 probability distribution.
+
+TOML account_floor and difficulty_floor are finite 0..1, defaulting independently
+to 0.5. Explicit account_floor wins; otherwise explicitly set legacy confidence
+maps to account_floor (including zero). Omitting both now gives 0.5 rather than
+the previous implicit 0.8. Choice confidence never gates acceptance. Difficulty
+confidence only gates reporting of difficulty, never account selection; missing
+or below-floor confidence gives null difficulty. No difficulty routing rule.
+
+`sb classify --json "<task>"` and routing dry-run share routing eligibility,
+login and cooldown checks. Both send task text when provider is enabled and a
+key is resolved, but never launch, create homes or write state. JSON includes
+tool/profile/reason/source/why and nullable probability, confidence, difficulty,
+difficulty_confidence. Rules have null account metrics. Valid raw normalized Jev
+choice and metrics remain in a nested jev object even on probability fallback.
+Plain output: pick, source, probability, reason, why (tabs). Status, doctor and
+usage never call Jev. Tests use fake transports only.
+References: https://docs.typesafe.ai/concepts/how-to-build-with-system-one,
+https://docs.typesafe.ai/primitives/choice,
+https://docs.typesafe.ai/primitives/score,
+https://docs.typesafe.ai/patterns/probability-routing and
+https://docs.typesafe.ai/patterns/confidence-routing.
 
 ## Strictly read-only usage reporting (same v0.1)
 `sb usage --json` prints ONE document:

@@ -10,33 +10,44 @@ import (
 	"strings"
 	"time"
 
+	"switchboard/internal/config"
 	"switchboard/internal/provider"
 )
 
 const Model = "jev-1.14.0"
 
 type Classifier interface {
-	Choose(context.Context, string, []provider.Account, float64) (provider.Account, float64, bool)
+	Choose(context.Context, string, []provider.Account, float64) Result
 }
+type Result struct {
+	Account              provider.Account `json:"-"`
+	Probability          *float64         `json:"probability"`
+	Confidence           *float64         `json:"confidence"`
+	Difficulty           *float64         `json:"difficulty"`
+	DifficultyConfidence *float64         `json:"difficulty_confidence"`
+	OK                   bool             `json:"-"`
+}
+
 type Jev struct {
+	Criteria map[string]config.Criteria
 	Key      string
 	Client   *http.Client
 	Endpoint string
 	Model    string
 }
 type answer struct {
-	Type          string             `json:"type"`
-	Choice        string             `json:"choice"`
-	Confidence    *float64           `json:"confidence"`
-	Score         *float64           `json:"score"`
-	Probabilities map[string]float64 `json:"probabilities"`
-	Legend        map[string]string  `json:"legend"`
+	Type          string                     `json:"type"`
+	Choice        string                     `json:"choice"`
+	Confidence    *float64                   `json:"confidence"`
+	Score         *float64                   `json:"score"`
+	Probabilities map[string]float64         `json:"probabilities"`
+	Legend        map[string]json.RawMessage `json:"legend"`
 }
 
-func (j Jev) Choose(ctx context.Context, task string, eligible []provider.Account, floor float64) (provider.Account, float64, bool) {
-	none := provider.Account{}
+func (j Jev) Choose(ctx context.Context, task string, eligible []provider.Account, floor float64) Result {
+	none := Result{}
 	if j.Key == "" || len(eligible) == 0 {
-		return none, 0, false
+		return none
 	}
 	ctx, cancel := context.WithTimeout(ctx, 3*time.Second)
 	defer cancel()
@@ -44,11 +55,19 @@ func (j Jev) Choose(ctx context.Context, task string, eligible []provider.Accoun
 	if model == "" {
 		model = Model
 	}
-	criteria := map[string]string{}
-	for _, a := range eligible {
-		criteria[a.ID()] = "Coding account " + a.ID()
+	criteria := map[string]config.Criteria{}
+	defaults := j.Criteria
+	if defaults == nil {
+		defaults = config.DefaultCriteria()
 	}
-	body := map[string]any{"model": model, "state": task, "questions": map[string]any{"account": map[string]any{"type": "choice", "instructions": "Select a coding account for this task", "criteria": criteria}, "difficulty": map[string]any{"type": "score", "instructions": "Rate coding difficulty", "criteria": []string{"routine", "complex", "advanced"}}}}
+	for _, a := range eligible {
+		criteria[a.ID()] = defaults[a.ID()]
+	}
+	body := map[string]any{"model": model, "state": task, "questions": map[string]any{"account": map[string]any{"type": "choice", "instructions": "Select a coding account for this task", "criteria": criteria}, "difficulty": map[string]any{"type": "score", "instructions": "Rate coding difficulty", "criteria": []map[string]any{
+		{"what": "Small local change a competent engineer can finish quickly", "examples": []string{"typo in README", "rename a variable", "obvious off-by-one"}},
+		{"what": "Feature, bug or refactor with clear scope requiring judgment", "examples": []string{"fix a flaky test", "add a CLI command", "refactor a scraper module"}},
+		{"what": "Open-ended design, architecture or cross-system high-risk change", "examples": []string{"design a multi-tenant auth model", "plan a data migration", "choose a storage architecture"}},
+	}}}}
 	b, _ := json.Marshal(body)
 	url := j.Endpoint
 	if url == "" {
@@ -56,7 +75,7 @@ func (j Jev) Choose(ctx context.Context, task string, eligible []provider.Accoun
 	}
 	req, e := http.NewRequestWithContext(ctx, "POST", url, bytes.NewReader(b))
 	if e != nil {
-		return none, 0, false
+		return none
 	}
 	req.Header.Set("Authorization", "Bearer "+j.Key)
 	req.Header.Set("Content-Type", "application/json")
@@ -66,11 +85,11 @@ func (j Jev) Choose(ctx context.Context, task string, eligible []provider.Accoun
 	}
 	resp, e := client.Do(req)
 	if e != nil {
-		return none, 0, false
+		return none
 	}
 	defer resp.Body.Close()
 	if resp.StatusCode != 200 {
-		return none, 0, false
+		return none
 	}
 	var result struct {
 		Model   string            `json:"model"`
@@ -78,34 +97,38 @@ func (j Jev) Choose(ctx context.Context, task string, eligible []provider.Accoun
 	}
 	decoder := json.NewDecoder(io.LimitReader(resp.Body, 65536))
 	if decoder.Decode(&result) != nil || strings.TrimPrefix(result.Model, "typesafe-ai/") != strings.TrimPrefix(model, "typesafe-ai/") {
-		return none, 0, false
+		return none
 	}
 	var trailing any
 	if decoder.Decode(&trailing) != io.EOF {
-		return none, 0, false
+		return none
 	}
 	a := result.Answers["account"]
 	s := result.Answers["difficulty"]
 	if !distribution(a.Probabilities, criteria) || !distribution(s.Probabilities, map[string]string{"0": "routine", "1": "complex", "2": "advanced"}) || len(s.Legend) != 3 {
-		return none, 0, false
+		return none
 	}
 	for _, key := range []string{"0", "1", "2"} {
-		if s.Legend[key] == "" {
-			return none, 0, false
+		if len(s.Legend[key]) == 0 || string(s.Legend[key]) == "null" {
+			return none
 		}
 	}
-	if a.Type != "choice" || a.Confidence == nil || *a.Confidence < 0 || *a.Confidence < floor || *a.Confidence > 1 || s.Type != "score" || s.Score == nil || *s.Score < 0 || *s.Score > 2 || s.Confidence == nil || *s.Confidence < 0 || *s.Confidence < floor || *s.Confidence > 1 {
-		return none, 0, false
+	if a.Type != "choice" || !validOptional(a.Confidence) || s.Type != "score" || s.Score == nil || *s.Score < 0 || *s.Score > 2 || !validOptional(s.Confidence) {
+		return none
 	}
+
 	for _, candidate := range eligible {
 		if candidate.ID() == a.Choice {
-			return candidate, *a.Confidence, true
+			p := a.Probabilities[a.Choice]
+			return Result{Account: candidate, Probability: &p, Confidence: a.Confidence, Difficulty: s.Score, DifficultyConfidence: s.Confidence, OK: true}
 		}
 	}
-	return none, 0, false
+	return none
 }
 
-func distribution(p map[string]float64, allowed map[string]string) bool {
+func validOptional(v *float64) bool { return v == nil || (*v >= 0 && *v <= 1) }
+
+func distribution[T any](p map[string]float64, allowed map[string]T) bool {
 	if len(p) != len(allowed) {
 		return false
 	}
