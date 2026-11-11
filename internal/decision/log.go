@@ -14,25 +14,29 @@ import (
 )
 
 type Label struct {
-	Family  string `json:"family"`
-	Account string `json:"account"`
+	Model   *string `json:"model"`
+	Family  string  `json:"family"`
+	Account string  `json:"account"`
 }
 type Override struct {
 	Account string `json:"account"`
 	Pin     bool   `json:"pin"`
 }
 type Record struct {
-	SchemaVersion int    `json:"schema_version"`
-	Type          string `json:"type"`
-	ID            string `json:"id"`
-	TS            string `json:"ts"`
-	DecisionID    string `json:"decision_id,omitempty"`
-	Family        string `json:"family"`
-	Account       string `json:"account"`
+	Model         *string `json:"model"`
+	SchemaVersion int     `json:"schema_version"`
+	Type          string  `json:"type"`
+	ID            string  `json:"id"`
+	TS            string  `json:"ts"`
+	DecisionID    string  `json:"decision_id,omitempty"`
+	Family        string  `json:"family"`
+	Account       string  `json:"account"`
 }
 
 // Decision deliberately excludes candidates, environment and raw classifier data.
 type Decision struct {
+	Tier        *string `json:"tier"`
+	ModelSource *string `json:"model_source"`
 	Record
 	DryRun               bool      `json:"dry_run"`
 	Task                 *string   `json:"task"`

@@ -27,6 +27,9 @@ func (a *App) localReport(c CLI, name string) int {
 		for _, f := range r.Families {
 			lines = append(lines, fmt.Sprintf("family\t%s\tcorrect=%d\tn=%d\taccuracy=%s", f.Family, f.Correct, f.N, number(f.Accuracy)))
 		}
+		for _, f := range r.Tiers {
+			lines = append(lines, fmt.Sprintf("tier\t%s\tcorrect=%d\tn=%d\taccuracy=%s", f.Tier, f.Correct, f.N, number(f.Accuracy)))
+		}
 		for _, f := range r.Floors {
 			lines = append(lines, fmt.Sprintf("floor\t%g\tcorrect=%d\tn=%d\tcoverage=%g\taccuracy=%s", f.Floor, f.Correct, f.N, f.Coverage, number(f.Accuracy)))
 		}
@@ -41,12 +44,12 @@ func (a *App) localReport(c CLI, name string) int {
 		return a.emit(c, r, lines)
 	}
 	f := struct {
-		ID              string
-		OK              bool
-		Family, Account string
-	}{c.Feedback.ID, c.Feedback.OK, c.Feedback.Family, c.Account}
-	if !f.OK && f.Family == "" && f.Account == "" {
-		return a.fail(2, "feedback requires --ok, --family or --account")
+		ID                     string
+		OK                     bool
+		Family, Account, Model string
+	}{c.Feedback.ID, c.Feedback.OK, c.Feedback.Family, c.Account, c.Model}
+	if !f.OK && f.Family == "" && f.Account == "" && f.Model == "" {
+		return a.fail(2, "feedback requires --ok, --family, --account or --model")
 	}
 	if f.Family != "" && f.Family != "claude" && f.Family != "codex" {
 		return a.fail(2, "invalid feedback family")
@@ -71,11 +74,17 @@ func (a *App) localReport(c CLI, name string) int {
 	if target == nil {
 		return a.fail(2, "decision not found")
 	}
+	if f.Model != "" && !config.ModelString(f.Model) {
+		return a.fail(2, "invalid feedback model")
+	}
 	if f.OK {
-		if (f.Family != "" && f.Family != target.Family) || (f.Account != "" && f.Account != target.Account) {
+		if (f.Family != "" && f.Family != target.Family) || (f.Account != "" && f.Account != target.Account) || (f.Model != "" && (target.Model == nil || f.Model != *target.Model)) {
 			return a.fail(2, "--ok conflicts with correction")
 		}
 		f.Family, f.Account = target.Family, target.Account
+		if target.Model != nil {
+			f.Model = *target.Model
+		}
 	}
 	conf, err := a.loadConfig(c)
 	if err != nil {
@@ -86,6 +95,9 @@ func (a *App) localReport(c CLI, name string) int {
 		return a.fail(1, "cannot create feedback")
 	}
 	record.DecisionID, record.Family, record.Account = target.ID, f.Family, f.Account
+	if f.Model != "" {
+		record.Model = &f.Model
+	}
 	feedback := decision.Feedback{Record: record, OK: f.OK}
 	if decision.Append(path, conf.Log.MaxBytes, feedback) != nil {
 		return a.fail(1, "cannot append feedback")
@@ -100,7 +112,7 @@ func (a *App) logDecision(c CLI, conf config.Config, d decision.Decision) string
 	}
 	record, err := decision.New("decision")
 	if err == nil {
-		record.Family, record.Account = d.Family, d.Account
+		record.Family, record.Account, record.Model = d.Family, d.Account, d.Model
 		d.Record, d.DryRun = record, c.DryRun
 		hash := sha256.Sum256([]byte(c.Run.Task))
 		d.TaskSHA256 = hex.EncodeToString(hash[:])
@@ -121,7 +133,8 @@ func (a *App) logDecision(c CLI, conf config.Config, d decision.Decision) string
 
 func decisionContract() map[string]any {
 	return map[string]any{
-		"schema_version":  1,
+		"schema_version": 1,
+		"model":          "passed model or null", "tier": "chosen easy/normal/hard or null", "model_source": "flag/passthrough/account/tier/default or null",
 		"path":            "$XDG_DATA_HOME/switchboard/decisions.jsonl (default ~/.local/share/switchboard/decisions.jsonl)",
 		"permissions":     "directory 0700; live and .1 files 0600",
 		"rotation":        "before exceeding max_bytes, replace one retained .1; records indivisible",
@@ -132,7 +145,7 @@ func decisionContract() map[string]any {
 		"exit_code":       "always null; sb cannot observe replacement CLI exits",
 		"duration_ms":     "always null, including dry-run/classify",
 		"implicit_labels": "explicit account pins only; defaults/rules never label",
-		"feedback":        map[string]any{"target": "id|last across retained decisions; ignore feedback", "requires": "--ok or explicit --family/--account; corrections must agree", "writes": "even with --no-log or log.enabled=false", "fields": []string{"schema_version", "type", "id", "ts", "decision_id", "family", "account", "ok"}},
-		"tune":            map[string]any{"sources": "retained local log only; latest label wins", "fields": []string{"schema_version", "decisions", "labelled_decisions", "jev_labelled_decisions", "too_few_labels", "families", "floors", "recommended_floor"}, "floors": []float64{.5, .6, .7, .8, .9}, "coverage": "labelled Jev with probability >= floor / all labelled Jev with probability", "accuracy": "correct / n; null when n=0", "recommendation": "highest accuracy with coverage >=0.80; ties higher floor; null if none", "minimum_labels": 30, "small_sample": "too_few_labels=true; provisional recommendation"},
+		"feedback":        map[string]any{"target": "id|last across retained decisions; ignore feedback", "requires": "--ok or explicit --family/--account/--model; corrections must agree", "writes": "even with --no-log or log.enabled=false", "fields": []string{"schema_version", "type", "id", "ts", "decision_id", "family", "account", "model", "ok"}},
+		"tune":            map[string]any{"sources": "retained local log only; latest label wins", "fields": []string{"schema_version", "decisions", "labelled_decisions", "jev_labelled_decisions", "too_few_labels", "families", "tiers", "floors", "recommended_floor"}, "floors": []float64{.5, .6, .7, .8, .9}, "coverage": "labelled Jev with probability >= floor / all labelled Jev with probability", "accuracy": "correct / n; null when n=0", "recommendation": "highest accuracy with coverage >=0.80; ties higher floor; null if none", "minimum_labels": 30, "small_sample": "too_few_labels=true; provisional recommendation"},
 	}
 }

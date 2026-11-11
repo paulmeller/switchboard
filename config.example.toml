@@ -55,3 +55,30 @@ account = "codex"
 enabled = true
 max_bytes = 5242880 # positive integer; a single line is never split
 redact_task = false # true: task=null, SHA-256 of raw task bytes retained
+
+# Optional tool model rules. ALL model IDs below are EXAMPLES, not defaults.
+# Built-ins set only these thresholds; no tool model or effort is built in.
+# Jev difficulty Score is 0..2, not 0..1; easy <= easy_max, hard >= hard_min.
+# Unknown/below-confidence difficulty and explicit launches use normal.
+# Omit unused model/effort fields; explicitly empty strings are invalid.
+# No model-list API is consulted. reasoning_effort is Codex-only (Claude rejects it).
+# [models]
+# easy_max = 0.67
+# hard_min = 1.33
+#
+# [models.codex]
+# easy = "example-codex-easy"
+# normal = "example-codex-normal"
+# hard = "example-codex-hard"
+# easy_reasoning_effort = "low"
+# normal_reasoning_effort = "medium"
+# hard_reasoning_effort = "high"
+#
+# [models.claude]
+# easy = "example-claude-easy"
+# normal = "example-claude-normal"
+# hard = "example-claude-hard"
+#
+# [models.accounts."codex/work"]
+# model = "example-codex-easy"
+# reasoning_effort = "low"

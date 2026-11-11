@@ -125,7 +125,7 @@ criteria are placeholders only. Empty merged `what` and unknown fields fail.
 
 Score levels describe small local changes, scoped features/bugs/refactors, and
 open-ended architecture or cross-system high-risk changes, each with examples.
-Difficulty only informs reporting; it never changes account selection.
+Difficulty selects optional model tiers; it never changes account selection.
 `probabilities[choice] >= account_floor` accepts an eligible Jev pick regardless
 of Choice confidence. Difficulty is shown only when its own confidence meets
 `difficulty_floor`; missing confidence leaves difficulty null. Invalid responses
@@ -278,3 +278,50 @@ because sb emits no colors or terminal control sequences. Errors are concise,
 fixed diagnostics; raw provider output is never forwarded by status or usage.
 Exit codes: 0 success, 1 operational/source failure, 2 invalid input/config,
 3 no eligible account. No telemetry.
+
+## Optional tool model tiers
+
+All tool model tiers and account overrides are unset by default: the genuine CLI
+keeps its own model default. Configure optional strings in
+`[models.codex]` / `[models.claude]`: `easy`, `normal`, `hard`.
+The commented model IDs in config.example.toml are examples only.
+No model-list API or known-model enum is consulted. Omit unused strings;
+explicitly empty names, surrounding whitespace and newlines are rejected.
+
+`[models] easy_max = 0.67` and `hard_min = 1.33` are built-in thresholds on
+Jev's **0..2 Score**. Both must be finite within 0..2, with easy_max < hard_min.
+Reported difficulty at/below easy_max selects easy; at/above hard_min selects
+hard; otherwise normal. Unknown or below-`difficulty_floor` difficulty, no Jev,
+classifier off and rules-only paths use normal. Difficulty still does not change
+account selection. Explicit launches skip the classifier and use normal.
+
+Precedence: explicit global `--model` > tool passthrough model/config override >
+`[models.accounts."tool/profile"] model` > family tier > CLI default.
+`--model` is flag-only, distinct from `--classifier-model`.
+Place sb flags before explicit launcher commands; flags after their `--` belong
+to the tool. Passthrough `--model`, `-m`, their equals forms, and
+`-c`/`--config` keys `model` or `model_reasoning_effort` suppress all rule
+injection. An explicit sb model replaces competing passthrough model/effort
+options and passes exactly one `--model NAME`, without rule effort.
+
+Rules prepend `--model NAME` to tool argv. Codex additionally receives two
+items `-c` and `model_reasoning_effort="<value>"` when configured, using TOML
+string quoting. Codex tier fields are `easy_reasoning_effort`,
+`normal_reasoning_effort`, `hard_reasoning_effort`; account overrides use
+`reasoning_effort`. Claude effort settings fail validation. Effort alone does
+not inject anything: the selected rule must supply a model. Account overrides with a model
+replace the whole family rule and do not inherit its effort.
+
+Routing/classify and explicit dry-run JSON expose nullable `model`, nullable
+`tier`, `model_source` (flag/passthrough/account/tier/default), and exact `argv`
+excluding the executable. Routed task text remains the last positional.
+Human reasons include model/tier/source. Tier is null when no rule applies.
+Decision logs add nullable model/tier/model_source; they do not log argv.
+Pin labels and `feedback --ok` include the chosen model when set.
+`sb feedback last --model NAME` corrects just the model, without a network check;
+`--ok` rejects conflicting model corrections. No environment model correction
+is supported. Tune adds `tiers` with correct/n/nullable accuracy per chosen tier,
+using decisions with model labels; equality with the logged model is correct.
+Family/floor statistics remain unchanged. Usage remains read-only and independent
+of classifier, routing and decision logging; its live safe sources and unsupported
+null quotas are unchanged.

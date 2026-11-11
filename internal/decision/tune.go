@@ -13,15 +13,22 @@ type Floor struct {
 	Coverage float64  `json:"coverage"`
 	Accuracy *float64 `json:"accuracy"`
 }
+type TierAccuracy struct {
+	Tier     string   `json:"tier"`
+	Correct  int      `json:"correct"`
+	N        int      `json:"n"`
+	Accuracy *float64 `json:"accuracy"`
+}
 type Report struct {
-	SchemaVersion  int        `json:"schema_version"`
-	Decisions      int        `json:"decisions"`
-	Labelled       int        `json:"labelled_decisions"`
-	JevLabelled    int        `json:"jev_labelled_decisions"`
-	TooFewLabels   bool       `json:"too_few_labels"`
-	Families       []Accuracy `json:"families"`
-	Floors         []Floor    `json:"floors"`
-	Recommendation *float64   `json:"recommended_floor"`
+	Tiers          []TierAccuracy `json:"tiers"`
+	SchemaVersion  int            `json:"schema_version"`
+	Decisions      int            `json:"decisions"`
+	Labelled       int            `json:"labelled_decisions"`
+	JevLabelled    int            `json:"jev_labelled_decisions"`
+	TooFewLabels   bool           `json:"too_few_labels"`
+	Families       []Accuracy     `json:"families"`
+	Floors         []Floor        `json:"floors"`
+	Recommendation *float64       `json:"recommended_floor"`
 }
 
 func ratio(correct, n int) *float64 {
@@ -33,14 +40,14 @@ func ratio(correct, n int) *float64 {
 }
 
 func Tune(records []Decision) Report {
-	r := Report{SchemaVersion: 1, Families: []Accuracy{{Family: "claude"}, {Family: "codex"}}, Floors: []Floor{}}
+	r := Report{Tiers: []TierAccuracy{{Tier: "easy"}, {Tier: "normal"}, {Tier: "hard"}}, SchemaVersion: 1, Families: []Accuracy{{Family: "claude"}, {Family: "codex"}}, Floors: []Floor{}}
 	labels := map[string]Label{}
 	for _, d := range records {
 		if d.Type == "decision" && d.Label != nil {
 			labels[d.ID] = *d.Label
 		}
 		if d.Type == "feedback" {
-			labels[d.DecisionID] = Label{Family: d.Family, Account: d.Account}
+			labels[d.DecisionID] = Label{Family: d.Family, Account: d.Account, Model: d.Model}
 		}
 	}
 	for _, d := range records {
@@ -49,6 +56,17 @@ func Tune(records []Decision) Report {
 		}
 		r.Decisions++
 		l := labels[d.ID]
+		if l.Model != nil && d.Tier != nil {
+			for i := range r.Tiers {
+				t := &r.Tiers[i]
+				if t.Tier == *d.Tier {
+					t.N++
+					if d.Model != nil && *l.Model == *d.Model {
+						t.Correct++
+					}
+				}
+			}
+		}
 		if l.Family == "" {
 			continue
 		}
@@ -69,6 +87,10 @@ func Tune(records []Decision) Report {
 	for i := range r.Families {
 		f := &r.Families[i]
 		f.Accuracy = ratio(f.Correct, f.N)
+	}
+	for i := range r.Tiers {
+		t := &r.Tiers[i]
+		t.Accuracy = ratio(t.Correct, t.N)
 	}
 	best := -1.0
 	for _, floor := range []float64{.5, .6, .7, .8, .9} {

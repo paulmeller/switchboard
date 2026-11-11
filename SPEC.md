@@ -61,7 +61,7 @@ to 0.5. Explicit account_floor wins; otherwise explicitly set legacy confidence
 maps to account_floor (including zero). Omitting both now gives 0.5 rather than
 the previous implicit 0.8. Choice confidence never gates acceptance. Difficulty
 confidence only gates reporting of difficulty, never account selection; missing
-or below-floor confidence gives null difficulty. No difficulty routing rule.
+or below-floor confidence gives null difficulty. Difficulty never changes account selection; optional model tiers use reported Score.
 
 `sb classify --json "<task>"` and routing dry-run share routing eligibility,
 login and cooldown checks. Both send task text when provider is enabled and a
@@ -183,3 +183,36 @@ no automatic configuration changes. Implicit pins may inflate measured accuracy.
 Stable tab-separated human/plain output and one JSON document; schema --json
 includes these commands and contracts. Labels whose decisions rotated out do not
 contribute. Tests use temporary homes/data directories and fakes only.
+
+## Optional model rules (model-rules branch)
+
+Tool models default to unset. [models] has finite 0..2 Score thresholds
+easy_max=0.67 and hard_min=1.33, strictly ordered. Family tables codex/claude
+accept optional easy/normal/hard strings. Codex also accepts corresponding
+<tier>_reasoning_effort strings; Claude effort settings are invalid.
+[models.accounts."tool/profile"] accepts model and Codex-only reasoning_effort.
+Unknown keys, explicit empty strings, surrounding whitespace/newlines and invalid
+account IDs fail Load. No known-model enum or model-list API. Sample IDs are
+documentation examples only, never compiled defaults.
+
+Use reported difficulty after difficulty_floor gating: <=easy_max easy,
+>=hard_min hard, otherwise normal. Unknown/off/no Jev/rules-only and explicit
+launches use normal. Account selection is unaffected.
+Precedence: flag-only global --model > passthrough --model/-m (including equals)
+or -c/--config model/model_reasoning_effort > account > family tier > no flags.
+A global flag passes exactly one --model and removes conflicting passthrough
+model/effort overrides. Passthrough suppresses all rule injection.
+A rule with a model prepends --model NAME; Codex optionally appends -c plus
+TOML-quoted model_reasoning_effort="<value>" before original arguments.
+Account rules with a model replace the family rule, including effort. Effort alone does nothing.
+
+Routing/classify and explicit-launch dry-run JSON include model:string|null,
+tier:easy|normal|hard|null, model_source:flag|passthrough|account|tier|default,
+argv:exact tool arguments excluding executable. No-rule/flag/passthrough tier
+is null. Human reason/plain includes model/tier/source. Task remains last.
+Decision v1 adds nullable model/tier/model_source (no argv). Pins' implicit
+labels and feedback --ok include the chosen model. Feedback --model accepts a
+non-empty correction, flag-only; --ok rejects conflicts. Model-only labels do
+not count toward family statistics. Tune adds tiers:[{tier,correct,n,accuracy}]
+for chosen tiers with model labels, comparing logged model to label; accuracy
+null at n=0. No provider calls. Existing usage safety and log isolation remain.

@@ -67,6 +67,7 @@ type Log struct {
 }
 
 type Config struct {
+	Models            Models              `toml:"models"`
 	Log               Log                 `toml:"log"`
 	Pin               string              `toml:"pin"`
 	UsageExhaustedPct float64             `toml:"usage_exhausted_pct"`
@@ -97,7 +98,7 @@ func ParseAccount(s string) (provider.Account, error) {
 }
 
 func Load(path, envDefault, flagDefault string, overrides ...Classifier) (Config, error) {
-	c := Config{Log: Log{Enabled: true, MaxBytes: 5242880}, Default: "codex/work", UsageExhaustedPct: 95, UsageCacheTTL: "60s", AccountFloor: 0.5, DifficultyFloor: 0.5}
+	c := Config{Models: Models{EasyMax: 0.67, HardMin: 1.33}, Log: Log{Enabled: true, MaxBytes: 5242880}, Default: "codex/work", UsageExhaustedPct: 95, UsageCacheTTL: "60s", AccountFloor: 0.5, DifficultyFloor: 0.5}
 	b, e := os.ReadFile(path)
 	if e == nil {
 		if toml.NewDecoder(bytes.NewReader(b)).DisallowUnknownFields().Decode(&c) != nil {
@@ -132,6 +133,9 @@ func Load(path, envDefault, flagDefault string, overrides ...Classifier) (Config
 		if override.Model != "" {
 			c.Classifier.Model = override.Model
 		}
+	}
+	if e = c.Models.Validate(); e != nil {
+		return c, e
 	}
 	if c.Log.MaxBytes <= 0 {
 		return c, errors.New("log max_bytes must be positive")

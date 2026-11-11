@@ -30,6 +30,7 @@ type Launch struct {
 	Args []string `arg:"" optional:"" sep:"none" help:"Optional work/personal, then tool arguments (use --)."`
 }
 type CLI struct {
+	Model              string   `help:"Tool model override; for feedback, correct the model (flag only)."`
 	ClassifierProvider string   `help:"Classifier: typesafe, ai-gateway or off." env:"SB_CLASSIFIER_PROVIDER"`
 	ClassifierBaseURL  string   `help:"Classifier TypeSafe-compatible base URL." env:"SB_CLASSIFIER_BASE_URL"`
 	ClassifierModel    string   `help:"Classifier model." env:"SB_CLASSIFIER_MODEL"`
@@ -97,7 +98,7 @@ func normalize(args []string) []string {
 	known := map[string]bool{"feedback": true, "tune": true, "classify": true, "run": true, "status": true, "doctor": true, "usage": true, "schema": true, "claude": true, "codex": true, "cooldown": true}
 	for i := 0; i < len(args); i++ {
 		v := args[i]
-		if v == "--config" || v == "--account" || v == "--classifier-provider" || v == "--classifier-base-url" || v == "--classifier-model" {
+		if v == "--model" || v == "--config" || v == "--account" || v == "--classifier-provider" || v == "--classifier-base-url" || v == "--classifier-model" {
 			i++
 			continue
 		}
@@ -183,6 +184,11 @@ parsedVersion:
 	if c.JSON && c.Plain {
 		return a.fail(2, "choose --json or --plain")
 	}
+	for _, step := range ctx.Path {
+		if step.Flag != nil && step.Flag.Name == "model" && !step.Resolved && !config.ModelString(c.Model) {
+			return a.fail(2, "invalid model")
+		}
+	}
 	command := ctx.Command()
 	base := strings.Fields(command)
 	if len(base) == 0 {
@@ -191,7 +197,7 @@ parsedVersion:
 	name := base[0]
 	background := context.Background()
 	if name == "schema" {
-		return a.emit(c, map[string]any{"schema_version": 1, "commands": schemaNode(p.Model.Node), "exit_codes": map[string]int{"success": 0, "failure": 1, "invalid_input": 2, "no_eligible_account": 3}, "decision_log_contract": decisionContract(), "classification_contract": map[string]string{"id": "decision UUID when successfully logged; otherwise omitted", "family": "launchable tool family", "candidates": "normalized status, cooldown and usage account candidates", "reason": "account selection explanation", "source": "jev|rules", "probability": "chosen family probability|null", "confidence": "Choice confidence|null", "difficulty": "0..2 when independently confident|null", "difficulty_confidence": "0..1|null", "jev": "raw normalized classification when valid", "why": "safe decision explanation"}, "usage_schema_version": 1, "usage_tool": "extensible string", "usage_contract": map[string]any{
+		return a.emit(c, map[string]any{"schema_version": 1, "commands": schemaNode(p.Model.Node), "exit_codes": map[string]int{"success": 0, "failure": 1, "invalid_input": 2, "no_eligible_account": 3}, "decision_log_contract": decisionContract(), "model_contract": modelContract(), "classification_contract": map[string]string{"id": "decision UUID when successfully logged; otherwise omitted", "family": "launchable tool family", "candidates": "normalized status, cooldown and usage account candidates", "reason": "account selection explanation", "source": "jev|rules", "probability": "chosen family probability|null", "confidence": "Choice confidence|null", "difficulty": "0..2 when independently confident|null", "difficulty_confidence": "0..1|null", "jev": "raw normalized classification when valid", "model": "passed model|null", "tier": "easy|normal|hard|null", "model_source": "flag|passthrough|account|tier|default", "argv": "exact tool argument vector, excluding executable", "why": "safe decision explanation"}, "usage_schema_version": 1, "usage_tool": "extensible string", "usage_contract": map[string]any{
 			"schema_version": 1, "row_count": 8, "checked_at": "RFC3339 Australia/Sydney",
 			"entry_keys": map[string]string{"tool": "extensible string", "profile": "string", "account": "string|null", "plan": "configured string|null", "login_ok": "boolean|null", "weekly_used_pct": "number 0..100|null", "weekly_resets_at": "RFC3339|null", "five_hour_used_pct": "number 0..100|null", "five_hour_resets_at": "RFC3339|null", "extra": "object", "source": "string|null", "error": "safe string|null"}, "sources": "live read-only Codex RPC, Claude login, Grok usage; unsupported quotas null", "all_source_failure_exit": 1, "partial_success_exit": 0,
 		}, "precedence": []string{"flags", "environment", "config", "defaults"}}, []string{"sb schema --json"})
@@ -314,8 +320,16 @@ parsedVersion:
 		if len(argv) > 0 && argv[0] == "--" {
 			argv = argv[1:]
 		}
+		conf, err := a.loadConfig(c)
+		if err != nil {
+			return a.fail(2, err.Error())
+		}
+		mp := chooseModel(c, conf.Models, provider.Account{Tool: name, Profile: profile}, nil, argv)
+		argv = mp.Argv
 		if c.DryRun {
-			return a.emit(c, map[string]string{"tool": name, "profile": profile, "reason": "explicit selection"}, []string{name + "/" + profile + "\texplicit selection"})
+			result := map[string]any{"tool": name, "profile": profile, "reason": "explicit selection; " + mp.text()}
+			mp.fields(result)
+			return a.emit(c, result, []string{name + "/" + profile + "\texplicit selection; " + mp.text()})
 		}
 		if e := provider.Launch(provider.Account{Tool: name, Profile: profile}, argv, a.Home, a.Env, false, a.Execute); e != nil {
 			return a.fail(1, e.Error())
@@ -464,12 +478,17 @@ parsedVersion:
 			difficulty = raw.Difficulty
 		}
 	}
+	mp := chooseModel(c, conf.Models, pick, difficulty, nil)
+	mp.Argv = append(mp.Argv, c.Run.Task)
+	reason += "; " + mp.text()
 	result := map[string]any{"family": family, "candidates": candidates, "tool": pick.Tool, "profile": pick.Profile, "reason": reason, "source": source, "why": why, "probability": probability, "confidence": confidence, "difficulty": difficulty, "difficulty_confidence": difficultyConfidence}
 
+	mp.fields(result)
 	logged = true
-	d := decision.Decision{Record: decision.Record{Family: family, Account: pick.ID()}, Source: source, Probability: probability, Confidence: confidence, Difficulty: difficulty, DifficultyConfidence: difficultyConfidence, Reason: reason}
+	d := decision.Decision{Record: decision.Record{Family: family, Account: pick.ID()}, Source: source, Probability: probability, Confidence: confidence, Difficulty: difficulty, DifficultyConfidence: difficultyConfidence, Reason: reason, Tier: mp.Tier, ModelSource: &mp.Source}
+	d.Model = mp.Model
 	if conf.Pin != "" {
-		d.Label = &decision.Label{Family: family, Account: pick.ID()}
+		d.Label = &decision.Label{Family: family, Account: pick.ID(), Model: mp.Model}
 	}
 	if id := a.logDecision(c, conf, d); id != "" {
 		result["id"] = id
@@ -506,7 +525,7 @@ parsedVersion:
 		return a.emit(c, result, lines)
 	}
 	fmt.Fprintln(a.Err, "sb: "+line)
-	if e := provider.Launch(pick, []string{c.Run.Task}, a.Home, a.Env, false, a.Execute); e != nil {
+	if e := provider.Launch(pick, mp.Argv, a.Home, a.Env, false, a.Execute); e != nil {
 		return a.fail(1, e.Error())
 	}
 	return 0
