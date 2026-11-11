@@ -99,3 +99,31 @@ func TestFloorsAndCriteria(t *testing.T) {
 		t.Fatal("field merge")
 	}
 }
+
+func TestLogConfig(t *testing.T) {
+	for _, tc := range []struct {
+		body  string
+		valid bool
+	}{
+		{"", true},
+		{"[log]\nenabled=false\nmax_bytes=1\nredact_task=true", true},
+		{"[log]\nmax_bytes=0", false},
+		{"[log]\nmax_bytes=-1", false},
+		{"[log]\nmax_bytes=1.5", false},
+		{"[log]\nenabled='yes'", false},
+		{"[log]\nredact_task='false'", false},
+		{"[log]\nunknown=true", false},
+	} {
+		path := filepath.Join(t.TempDir(), "config.toml")
+		if err := os.WriteFile(path, []byte(tc.body), 0o600); err != nil {
+			t.Fatal(err)
+		}
+		c, err := Load(path, "", "")
+		if (err == nil) != tc.valid {
+			t.Fatalf("log validation %q: %v", tc.body, err)
+		}
+		if tc.body == "" && (!c.Log.Enabled || c.Log.MaxBytes != 5242880 || c.Log.RedactTask) {
+			t.Fatal("log defaults")
+		}
+	}
+}

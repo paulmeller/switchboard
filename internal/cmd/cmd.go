@@ -11,6 +11,7 @@ import (
 	"strings"
 	"time"
 
+	"switchboard/internal/decision"
 	"switchboard/internal/picker"
 
 	"switchboard/internal/classifier"
@@ -35,10 +36,11 @@ type CLI struct {
 	JSON               bool     `help:"Emit one JSON document."`
 	Plain              bool     `help:"Stable tab-separated output."`
 	NoInput            bool     `help:"Never prompt (sb never prompts)."`
-	DryRun             bool     `help:"Read-only selection; do not launch or write."`
+	DryRun             bool     `help:"Select without launch, homes or state writes; may append decision log."`
+	NoLog              bool     `help:"Disable routing decision logging for this invocation."`
 	Version            bool     `help:"Print version."`
 	Config             string   `help:"Config TOML path." env:"SB_CONFIG"`
-	Account            string   `help:"Hard pin tool/profile; skip classifier and usage selection." env:"SB_ACCOUNT"`
+	Account            string   `help:"Hard pin tool/profile; for feedback, correct the account." env:"SB_ACCOUNT"`
 	Claude             Launch   `cmd:"" passthrough:"" help:"Exec genuine Claude (default: work)."`
 	Codex              Launch   `cmd:"" passthrough:"" help:"Exec genuine Codex (default: work)."`
 	Status             struct{} `cmd:"" help:"Check four login states, not credits."`
@@ -48,7 +50,13 @@ type CLI struct {
 	Classify           struct {
 		Task string `arg:"" help:"Task to classify without launching."`
 	} `cmd:"" help:"Calibrate routing; may send task text to Jev."`
-	Run struct {
+	Feedback struct {
+		ID     string `arg:"" help:"Decision UUID or last."`
+		OK     bool   `help:"Stored family and account were correct."`
+		Family string `help:"Correct launchable family."`
+	} `cmd:"" help:"Append a local decision label (even with --no-log)."`
+	Tune struct{} `cmd:"" help:"Report local labelled routing accuracy and probability floors."`
+	Run  struct {
 		Task string `arg:"" help:"Task prompt (quote as one argument)."`
 	} `cmd:"" help:"Route a task and exec the selected tool."`
 	Cooldown struct {
@@ -86,7 +94,7 @@ func (a *App) value(k string) string {
 }
 func (a *App) fail(code int, msg string) int { fmt.Fprintln(a.Err, "sb: "+msg); return code }
 func normalize(args []string) []string {
-	known := map[string]bool{"classify": true, "run": true, "status": true, "doctor": true, "usage": true, "schema": true, "claude": true, "codex": true, "cooldown": true}
+	known := map[string]bool{"feedback": true, "tune": true, "classify": true, "run": true, "status": true, "doctor": true, "usage": true, "schema": true, "claude": true, "codex": true, "cooldown": true}
 	for i := 0; i < len(args); i++ {
 		v := args[i]
 		if v == "--config" || v == "--account" || v == "--classifier-provider" || v == "--classifier-base-url" || v == "--classifier-model" {
@@ -183,10 +191,25 @@ parsedVersion:
 	name := base[0]
 	background := context.Background()
 	if name == "schema" {
-		return a.emit(c, map[string]any{"schema_version": 1, "commands": schemaNode(p.Model.Node), "exit_codes": map[string]int{"success": 0, "failure": 1, "invalid_input": 2, "no_eligible_account": 3}, "classification_contract": map[string]string{"family": "launchable tool family", "candidates": "normalized status, cooldown and usage account candidates", "reason": "account selection explanation", "source": "jev|rules", "probability": "chosen family probability|null", "confidence": "Choice confidence|null", "difficulty": "0..2 when independently confident|null", "difficulty_confidence": "0..1|null", "jev": "raw normalized classification when valid", "why": "safe decision explanation"}, "usage_schema_version": 1, "usage_tool": "extensible string", "usage_contract": map[string]any{
+		return a.emit(c, map[string]any{"schema_version": 1, "commands": schemaNode(p.Model.Node), "exit_codes": map[string]int{"success": 0, "failure": 1, "invalid_input": 2, "no_eligible_account": 3}, "decision_log_contract": decisionContract(), "classification_contract": map[string]string{"id": "decision UUID when successfully logged; otherwise omitted", "family": "launchable tool family", "candidates": "normalized status, cooldown and usage account candidates", "reason": "account selection explanation", "source": "jev|rules", "probability": "chosen family probability|null", "confidence": "Choice confidence|null", "difficulty": "0..2 when independently confident|null", "difficulty_confidence": "0..1|null", "jev": "raw normalized classification when valid", "why": "safe decision explanation"}, "usage_schema_version": 1, "usage_tool": "extensible string", "usage_contract": map[string]any{
 			"schema_version": 1, "row_count": 8, "checked_at": "RFC3339 Australia/Sydney",
 			"entry_keys": map[string]string{"tool": "extensible string", "profile": "string", "account": "string|null", "plan": "configured string|null", "login_ok": "boolean|null", "weekly_used_pct": "number 0..100|null", "weekly_resets_at": "RFC3339|null", "five_hour_used_pct": "number 0..100|null", "five_hour_resets_at": "RFC3339|null", "extra": "object", "source": "string|null", "error": "safe string|null"}, "sources": "live read-only Codex RPC, Claude login, Grok usage; unsupported quotas null", "all_source_failure_exit": 1, "partial_success_exit": 0,
 		}, "precedence": []string{"flags", "environment", "config", "defaults"}}, []string{"sb schema --json"})
+	}
+	if name == "feedback" || name == "tune" {
+		// A routing environment pin is not an explicit feedback correction.
+		if name == "feedback" {
+			explicit := false
+			for _, step := range ctx.Path {
+				if step.Flag != nil && step.Flag.Name == "account" && !step.Resolved {
+					explicit = true
+				}
+			}
+			if !explicit {
+				c.Account = ""
+			}
+		}
+		return a.localReport(c, name)
 	}
 	if name == "usage" {
 		source := a.UsageSource
@@ -332,6 +355,12 @@ parsedVersion:
 	if e != nil {
 		return a.fail(2, e.Error())
 	}
+	logged := false
+	defer func() {
+		if !logged {
+			a.logDecision(c, conf, decision.Decision{Source: "rules", Reason: "routing failed before account selection"})
+		}
+	}()
 	order, _ := conf.Order(c.Run.Task)
 	statuses := a.statuses(background)
 	eligible := []string{}
@@ -436,6 +465,16 @@ parsedVersion:
 		}
 	}
 	result := map[string]any{"family": family, "candidates": candidates, "tool": pick.Tool, "profile": pick.Profile, "reason": reason, "source": source, "why": why, "probability": probability, "confidence": confidence, "difficulty": difficulty, "difficulty_confidence": difficultyConfidence}
+
+	logged = true
+	d := decision.Decision{Record: decision.Record{Family: family, Account: pick.ID()}, Source: source, Probability: probability, Confidence: confidence, Difficulty: difficulty, DifficultyConfidence: difficultyConfidence, Reason: reason}
+	if conf.Pin != "" {
+		d.Label = &decision.Label{Family: family, Account: pick.ID()}
+	}
+	if id := a.logDecision(c, conf, d); id != "" {
+		result["id"] = id
+	}
+
 	if raw.OK {
 		result["jev"] = map[string]any{"choice": raw.Family, "probability": raw.Probability, "confidence": raw.Confidence, "difficulty": raw.Difficulty, "difficulty_confidence": raw.DifficultyConfidence}
 	}

@@ -11,6 +11,7 @@ import (
 	"time"
 
 	"switchboard/internal/classifier"
+	"switchboard/internal/decision"
 	"switchboard/internal/provider"
 	"switchboard/internal/state"
 	"switchboard/internal/usage"
@@ -33,6 +34,9 @@ func TestCommands(t *testing.T) {
 		p := &fakeProbe{signed: true}
 		a := App{Out: &out, Err: &err, Home: t.TempDir(), UsageSource: usage.Unsupported{}, Classifier: forbiddenClassifier{t}, Probe: p, Execute: func(string, []string, []string) error { t.Fatal("unexpected launch"); return nil }}
 		code := a.Run(args)
+		if _, err := os.Stat(filepath.Join(a.Home, ".local", "share", "switchboard", "decisions.jsonl")); !os.IsNotExist(err) {
+			t.Fatal("report wrote decision log")
+		}
 		if args[0] == "usage" {
 			if code != 1 || p.calls != 0 {
 				t.Fatal("usage accessed status or wrong code")
@@ -151,10 +155,7 @@ func TestRoutingDryRunClassifier(t *testing.T) {
 		if !bytes.Contains(out.Bytes(), []byte("Jev classification")) || !bytes.Contains(out.Bytes(), []byte("0.95")) {
 			t.Fatal("missing classification output")
 		}
-		entries, _ := os.ReadDir(home)
-		if len(entries) != 0 {
-			t.Fatal("dry-run created home or state")
-		}
+		onlyDecisionLog(t, home)
 	}
 }
 
@@ -188,6 +189,9 @@ func TestDoctorClassifier(t *testing.T) {
 	if !bytes.Contains(out.Bytes(), []byte("classifier key present")) || bytes.Contains(out.Bytes(), []byte("fake-test-value")) {
 		t.Fatal("doctor key presence")
 	}
+	if _, err := os.Stat(filepath.Join(a.Home, ".local", "share", "switchboard", "decisions.jsonl")); !os.IsNotExist(err) {
+		t.Fatal("doctor wrote decision log")
+	}
 }
 
 type calibrationClassifier struct{ probability float64 }
@@ -217,10 +221,7 @@ func TestCalibrationProbabilityAndDifficulty(t *testing.T) {
 			if result["source"] != source || result["difficulty"] != nil || result["jev"].(map[string]any)["probability"] != probability {
 				t.Fatal("decoupled gates or raw numbers")
 			}
-			entries, _ := os.ReadDir(home)
-			if len(entries) != 0 {
-				t.Fatal("calibration wrote files")
-			}
+			onlyDecisionLog(t, home)
 		}
 	}
 }
@@ -272,6 +273,10 @@ func TestPins(t *testing.T) {
 				}
 				var r map[string]any
 				json.Unmarshal(out.Bytes(), &r)
+				records, err := decision.Read(decision.Path(home, ""))
+				if err != nil || len(records) != 1 || records[0].Label == nil || records[0].Label.Account != "codex/personal" {
+					t.Fatal("missing implicit pin label")
+				}
 				if r["tool"] != "codex" || r["profile"] != "personal" {
 					t.Fatal("pin changed")
 				}

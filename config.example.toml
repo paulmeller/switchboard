@@ -45,3 +45,13 @@ account = "codex"
 # what = "Implementation, tests, refactors and everyday coding"
 # not_for = "Design, architecture, writing and harder reasoning belong to Claude"
 # examples = ["fix a flaky test", "refactor a scraper", "add a CLI command"]
+
+# Routed tasks, including dry-run/classify, append a local JSONL decision.
+# $XDG_DATA_HOME/switchboard/decisions.jsonl (default ~/.local/share/switchboard).
+# Directory 0700, files 0600. Rotate to one .1 before exceeding max_bytes.
+# Use --no-log to suppress routing writes. Explicit feedback always writes.
+# Exec exit/duration and dry-run timing are null. Pins supply implicit labels.
+[log]
+enabled = true
+max_bytes = 5242880 # positive integer; a single line is never split
+redact_task = false # true: task=null, SHA-256 of raw task bytes retained

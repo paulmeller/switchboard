@@ -17,7 +17,7 @@ Use Kong, `cmd/sb` and `internal/`, colocated tests, gofumpt/goimports. Data to 
 `sb doctor`: binary PATH presence, env/Keychain presence only, Codex dirs, actionable fixes. No automatic installation, login, config writes, or secret printing.
 
 ## Automatic routing
-`sb "<task>"` and `sb run "<task>"`, global flags accepted including `sb --dry-run "fix a flaky test"`. Rules from config select deterministically and print pick + reason. Skip signed-out and cooldown accounts. Without dry-run, launch chosen real tool with task as its prompt. `--dry-run` must neither launch a task nor write state/create homes. Four default accounts; sample TOML. Flags > env > user config > built-in defaults; document supported overrides. Config: $XDG_CONFIG_HOME/switchboard/config.toml else ~/.config/switchboard/config.toml. State: $XDG_STATE_HOME/switchboard else ~/.local/state/switchboard. Restrictive atomic state writes. No credential values in state. Local 429 cooldowns must be supported honestly: exec cannot observe child output/exit after replacement, so implement a documented explicit local cooldown-report command or state input rather than pretending automatic child failure tracking. No proxy/supervisor for tasks.
+`sb "<task>"` and `sb run "<task>"`, global flags accepted including `sb --dry-run "fix a flaky test"`. Rules from config select deterministically and print pick + reason. Skip signed-out and cooldown accounts. Without dry-run, launch chosen real tool with task as its prompt. `--dry-run` must neither launch a task nor write cooldown/usage-cache state or create homes; a local decision-log append is the intentional exception unless `--no-log`. Four default accounts; sample TOML. Flags > env > user config > built-in defaults; document supported overrides. Config: $XDG_CONFIG_HOME/switchboard/config.toml else ~/.config/switchboard/config.toml. State: $XDG_STATE_HOME/switchboard else ~/.local/state/switchboard. Restrictive atomic state writes. No credential values in state. Local 429 cooldowns must be supported honestly: exec cannot observe child output/exit after replacement, so implement a documented explicit local cooldown-report command or state input rather than pretending automatic child failure tracking. No proxy/supervisor for tasks.
 
 ## Optional Classifier
 Classifier interface, deterministic rules and optional Jev adapter. Config TOML
@@ -65,7 +65,7 @@ or below-floor confidence gives null difficulty. No difficulty routing rule.
 
 `sb classify --json "<task>"` and routing dry-run share routing eligibility,
 login and cooldown checks. Both send task text when provider is enabled and a
-key is resolved, but never launch, create homes or write state. JSON includes
+key is resolved, but never launch, create homes or write cooldown/usage-cache state; they may append the decision log. JSON includes
 tool/profile/reason/source/why and nullable probability, confidence, difficulty,
 difficulty_confidence. Rules have null family metrics. Valid raw normalized Jev
 choice and metrics remain in a nested jev object even on probability fallback.
@@ -114,7 +114,8 @@ Normalized quota cache: usage-cache.json beside cooldown state, atomic 0600 with
 nonnegative duration. Fresh covered rows skip collectors. Fetch missing/expired
 eligible rows at two seconds per row; errors/timeouts reuse cache up to TTL+5m,
 otherwise null usage. Cache writes best effort on launch only. Dry-run/classify
-remain file-write-free; task text still goes to configured keyed classifiers.
+never write cooldown/usage-cache state or create homes; decision logging is the only
+intentional write unless `--no-log`. Task text still goes to configured keyed classifiers.
 Usage stays isolated with eight rows and five seconds per row.
 
 Classify/dry-run include family/source/probability/confidence, final tool/profile,
@@ -122,3 +123,63 @@ account reason, why and existing difficulty/raw Jev metrics. candidates includes
 account ID, status login, cooldown, numeric windows/resets, exhausted, headroom,
 chosen. Reset reasons use Australia/Sydney named zones. Rules metrics null;
 valid losing Jev numbers retained. README documents source limitations.
+
+
+## Local decisions, feedback and tuning
+
+Routed tasks, including classify and routing dry-runs, append normalized v1 JSONL
+at $XDG_DATA_HOME/switchboard/decisions.jsonl (default
+~/.local/share/switchboard/decisions.jsonl). Directory 0700, live file 0600.
+[log] defaults: enabled=true, max_bytes=5242880, redact_task=false. max_bytes must
+be a positive integer; unknown fields/invalid values fail Load, exit 2. --no-log
+suppresses routing logging. No SB_NO_LOG override. Explicit tool launches,
+status, doctor, usage, schema and cooldown never append decisions.
+
+Before an append exceeds max_bytes, rename live to decisions.jsonl.1, replacing
+the previous generation, then create live 0600. Both files remain 0600. Records
+are indivisible, so one oversized line may exceed the limit. No compression.
+Concurrent rotation is not coordinated between processes. Append failures use a
+fixed stderr diagnostic and never change routing exit status.
+
+Decision fields: schema_version=1, type=decision, unique RFC4122 UUID id, ts in
+Australia/Sydney RFC3339 numeric offset (embedded tzdata), dry_run, task,
+task_sha256, family, source (jev/rules), probability, confidence, difficulty,
+difficulty_confidence, account, reason, override, exit_code, duration_ms.
+Metrics are nullable as in classify. SHA-256 is lowercase hex of raw task bytes,
+always present; redaction makes task null. override is null or {account,pin:true}.
+No keys, environment, tokens, raw HTTP/Keychain, candidates or usage rows.
+Failed selection attempts have empty family/account and no implicit label.
+Successful dry-run/classify JSON includes id only when the log append succeeded.
+
+Log real launches before syscall.Exec, never fork/wait. Exec cannot observe the
+replacement CLI's exit/duration; exit_code and duration_ms are always null,
+including pre-exec failures. Dry-run/classify also use null for both. An attempted
+launch record does not prove execution or success. Logging is the only dry-run
+write exception: no homes, cooldown or usage-cache writes.
+
+sb feedback <id|last> requires --ok or --family/--account correction. last is the
+most recent decision across retained generations, ignoring feedback. Family is
+claude/codex; account is a valid full launch account and also supplies its family.
+Corrections must agree; --ok plus conflicting corrections fails exit 2. Missing
+or unknown IDs, empty logs and absent labels fail exit 2 with fixed diagnostics.
+Feedback appends even with --no-log or [log] enabled=false if the target exists.
+Records include schema_version=1, type=feedback, own id/ts, decision_id, labelled
+family/account and ok boolean. Same rotation/permissions. Explicit --account,
+SB_ACCOUNT and TOML pin decisions contain an equivalent implicit label object
+for that exact family/account; defaults/rules do not imply labels.
+
+sb tune reads only live and .1 local JSONL, never providers, classifier or usage.
+Missing files produce zeros/no recommendation. Join labels by decision id;
+latest feedback replaces previous or implicit labels. A family label defines a
+labelled decision. Count all retained decisions and labelled decisions. Report
+per predicted family correct/n and accuracy (null when n=0).
+For labelled Jev decisions with probability, floors .5/.6/.7/.8/.9 report
+coverage=n_at_or_above_floor/n_labelled_jev_with_probability and
+accuracy=n_correct_at_or_above_floor/n_at_or_above_floor (null when n=0).
+Recommend highest accuracy among floors with >=.80 coverage, ties higher floor.
+No qualifying floor means no recommendation. Fewer than 30 family labels sets
+too_few_labels=true and an explicit provisional warning. Compute tables anyway;
+no automatic configuration changes. Implicit pins may inflate measured accuracy.
+Stable tab-separated human/plain output and one JSON document; schema --json
+includes these commands and contracts. Labels whose decisions rotated out do not
+contribute. Tests use temporary homes/data directories and fakes only.

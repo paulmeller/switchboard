@@ -20,6 +20,9 @@ Do not install over existing launchers.
 ./build/sb run 'implement the parser'
 ./build/sb cooldown codex/work --duration 1h
 ./build/sb usage --json
+./build/sb feedback last --ok
+./build/sb feedback last --family claude
+./build/sb tune --json
 ./build/sb schema --json
 ```
 
@@ -80,8 +83,9 @@ $XDG_STATE_HOME/switchboard/usage-cache.json (default
 rows skip collectors; expired/missing rows fetch. Failed/timed-out fetches reuse
 entries no older than TTL plus five minutes, otherwise usage is unknown. Cache
 writes are best effort and contain no task text, identity, raw blobs or secrets.
-Dry-run/classify read the cache or fetch in memory and never write files, launch,
-create homes or write cooldowns. The usage command does not use this routing cache.
+Dry-run/classify read the cache or fetch in memory and never launch, create homes,
+or write cooldown/usage-cache state. They may append the local decision log unless
+`--no-log` is supplied or logging is disabled. The usage command does not use this routing cache.
 
 The optional `[classifier]` table selects `provider = "typesafe"` (default),
 `"ai-gateway"`, or `"off"`. Omitted fields use these provider defaults:
@@ -107,7 +111,8 @@ file presence or a Keychain lookup without password flags; it makes no repairs.
 
 **Routing, dry-run and `classify` send task text externally when a classifier
 key is configured.** `sb classify --json "<task>"` uses routing eligibility and
-cooldowns but never launches, creates homes or writes state. Status, doctor and
+cooldowns but never launches, creates homes or writes cooldown/usage-cache state;
+it may append a decision log line. Status, doctor and
 usage never call Jev. Requests use the pinned provider models above and a
 three-second bound; model echoes accept equivalent short/prefixed IDs.
 
@@ -145,7 +150,70 @@ Cooldowns are explicit local reports, not automatic 429 detection. Exec replaces
 sb, so sb cannot observe subsequent tool output or exits. State is written
 atomically with mode 0600 under $XDG_STATE_HOME/switchboard (default
 ~/.local/state/switchboard), with a mode 0700 parent. A dry cooldown report writes
-nothing. No credential values or task text are persisted.
+nothing. Cooldown state contains no credential values or task text.
+
+
+## Local decision log and calibration
+
+Routed tasks (`sb "<task>"`, `sb run`, `sb --dry-run`, and `sb classify`)
+append version 1 JSONL to `$XDG_DATA_HOME/switchboard/decisions.jsonl`, default
+`~/.local/share/switchboard/decisions.jsonl`. The switchboard directory is 0700;
+the live file and retained `decisions.jsonl.1` are 0600. Before an append would
+exceed `[log] max_bytes` (default 5242880, positive integer), the live file is
+renamed to `.1`, replacing the previous generation. A record is never split;
+a single oversized record can exceed the limit. Only these two generations are
+retained. Concurrent rotation is not coordinated between processes.
+
+`[log] enabled = true` and `redact_task = false` are the defaults. Unknown fields
+and invalid values fail config loading with exit 2. `--no-log` disables routing
+logging for that invocation. With `redact_task = true`, `task` is null and
+`task_sha256` contains the lowercase SHA-256 of the original task bytes; the hash
+is also present for unredacted tasks. Do not put secrets in task text. There are
+no key, environment, HTTP, Keychain, candidate or usage dumps in this log.
+
+Each decision includes a UUID `id`, Sydney RFC3339 timestamp with numeric offset,
+dry-run flag, selected family/account, source, nullable classification metrics,
+reason and nullable override. Dry-run/classify JSON includes `id` when appended.
+Explicit account pins (`--account`, `SB_ACCOUNT`, TOML `pin`) include an override
+and an implicit `label` for that exact family/account. Defaults and rules never
+create implicit labels. Failed selection attempts can have empty family/account
+and no label. Explicit `sb claude`/`sb codex` launches are not logged. Status,
+doctor, usage, schema and cooldown never append decisions.
+
+Exec still replaces sb. Real launches are logged **before** exec and both
+`exit_code` and `duration_ms` are null, including when launch subsequently fails.
+They are also null for dry-run/classify; no command/decision timing is measured.
+An attempted launch record is not evidence that the tool started or succeeded.
+Failed log writes produce a fixed stderr diagnostic and preserve routing's exit.
+Dry-run's intentional logging exception creates no Codex homes or cooldown/usage
+cache state; use `--no-log` for a selection without that log write.
+
+`sb feedback <id|last> --ok` appends a feedback record accepting the stored family
+and account. `last` ignores feedback records. Use `--family claude` or
+`--account codex/personal` to correct a decision; an account correction also labels
+its family. Families must be claude/codex; accounts must be valid launch accounts.
+`SB_ACCOUNT` alone is not a feedback correction. Corrections must agree with each other; `--ok` cannot conflict with a correction.
+Missing/unknown IDs, empty logs and missing labels exit 2. Explicit feedback still
+writes with `--no-log` or logging disabled, provided the target decision exists.
+Feedback has its own UUID, timestamp, decision ID, family/account and `ok` boolean,
+without task text. It uses the same permissions and rotation as decisions.
+
+`sb tune [--json|--plain]` reads only the retained local log generations. It makes
+no classifier, usage or provider calls and does not change `account_floor`.
+Missing logs report zero decisions/labels and no recommendation. The latest
+feedback replaces an implicit or earlier label for each decision. Labels whose
+decisions have rotated out cannot contribute. Family accuracy groups by the
+**predicted** family: correct labels / labelled predictions for that family.
+
+For labelled Jev decisions with a probability, floors 0.5/0.6/0.7/0.8/0.9 report
+coverage (number at/above floor divided by all such labelled Jev decisions) and
+accuracy (correct family labels divided by predictions at/above floor).
+Accuracy is null for an empty denominator. Among floors with coverage >= 80%,
+tune recommends the highest accuracy, breaking ties toward the higher floor.
+If none reaches 80%, there is no recommendation. With fewer than 30 family labels,
+`too_few_labels` is true and any recommendation is explicitly provisional, not
+proven. Pin labels measure explicit operator preferences and can inflate accuracy;
+use representative corrections before changing `account_floor` manually.
 
 ## Usage contract and safety
 

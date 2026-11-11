@@ -60,7 +60,14 @@ func (c *Classifier) Validate() error {
 	return nil
 }
 
+type Log struct {
+	Enabled    bool  `toml:"enabled"`
+	MaxBytes   int64 `toml:"max_bytes"`
+	RedactTask bool  `toml:"redact_task"`
+}
+
 type Config struct {
+	Log               Log                 `toml:"log"`
 	Pin               string              `toml:"pin"`
 	UsageExhaustedPct float64             `toml:"usage_exhausted_pct"`
 	UsageCacheTTL     string              `toml:"usage_cache_ttl"`
@@ -90,7 +97,7 @@ func ParseAccount(s string) (provider.Account, error) {
 }
 
 func Load(path, envDefault, flagDefault string, overrides ...Classifier) (Config, error) {
-	c := Config{Default: "codex/work", UsageExhaustedPct: 95, UsageCacheTTL: "60s", AccountFloor: 0.5, DifficultyFloor: 0.5}
+	c := Config{Log: Log{Enabled: true, MaxBytes: 5242880}, Default: "codex/work", UsageExhaustedPct: 95, UsageCacheTTL: "60s", AccountFloor: 0.5, DifficultyFloor: 0.5}
 	b, e := os.ReadFile(path)
 	if e == nil {
 		if toml.NewDecoder(bytes.NewReader(b)).DisallowUnknownFields().Decode(&c) != nil {
@@ -125,6 +132,9 @@ func Load(path, envDefault, flagDefault string, overrides ...Classifier) (Config
 		if override.Model != "" {
 			c.Classifier.Model = override.Model
 		}
+	}
+	if c.Log.MaxBytes <= 0 {
+		return c, errors.New("log max_bytes must be positive")
 	}
 	if e = c.Classifier.Validate(); e != nil {
 		return c, e
