@@ -164,7 +164,8 @@ func TestCache(t *testing.T) {
 	}
 	src.value = 40
 	got := fetch(now.Add(time.Second), false)
-	if src.calls.Load() != 1 || *got[0].WeeklyUsedPct != 20 {
+	at := func(d time.Duration) string { return now.Add(d).UTC().Format(time.RFC3339) }
+	if src.calls.Load() != 1 || *got[0].WeeklyUsedPct != 20 || got[0].CheckedAt != at(0) {
 		t.Fatal("fresh cache")
 	}
 	got = fetch(now.Add(2*time.Minute), false)
@@ -173,15 +174,15 @@ func TestCache(t *testing.T) {
 	}
 	src.fail = true
 	got = fetch(now.Add(2*time.Minute), false)
-	if src.calls.Load() != 3 || *got[0].WeeklyUsedPct != 20 {
+	if src.calls.Load() != 3 || *got[0].WeeklyUsedPct != 20 || got[0].CheckedAt != at(0) {
 		t.Fatal("timeout stale fallback")
 	}
 	got = fetch(now.Add(7*time.Minute), false)
-	if got[0].WeeklyUsedPct != nil {
+	if got[0].WeeklyUsedPct != nil || got[0].CheckedAt != at(7*time.Minute) {
 		t.Fatal("too stale")
 	}
 	got = Cached(context.Background(), src, filepath.Join(t.TempDir(), "missing"), rows, time.Minute, time.Millisecond, now, false)
-	if got[0].WeeklyUsedPct != nil {
+	if got[0].WeeklyUsedPct != nil || got[0].CheckedAt != at(0) {
 		t.Fatal("failure unknown")
 	}
 	b, _ := os.ReadFile(path)

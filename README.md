@@ -354,14 +354,16 @@ session transcripts are accessed. No estimates are produced.
 Stable version 1 shape (all entry keys are always present):
 
 ```json
-{"schema_version":1,"checked_at":"2026-11-11T21:34:00+11:00","accounts":[{"tool":"claude","profile":"work","account":null,"plan":"Ultra","login_ok":null,"weekly_used_pct":null,"weekly_resets_at":null,"five_hour_used_pct":null,"five_hour_resets_at":null,"extra":{},"source":null,"error":"no verified safe source; quota unavailable"}]}
+{"schema_version":1,"checked_at":"2026-11-11T21:34:00+11:00","accounts":[{"tool":"claude","profile":"work","account":null,"plan":"Ultra","login_ok":null,"weekly_used_pct":null,"weekly_resets_at":null,"five_hour_used_pct":null,"five_hour_resets_at":null,"extra":{},"source":null,"error":"no verified safe source; quota unavailable","checked_at":"2026-11-11T10:34:00Z"}]}
 ```
 
 Actual reports contain 6 + N_agy rows in this order: Claude work/personal (Ultra),
 Codex work (Team) and personal (Plus), one row per configured Antigravity account
 in config order (or the implicit `agy/personal`), Grok CLI, and plain Claude. `tool` is an extensible string, not a closed enum; consumers may
-append tools such as grokbot. `checked_at` uses Australia/Sydney with the actual
-offset; timezone data is embedded. Percentages are numbers 0..100 or null. Reset
+append tools such as grokbot. The document-level `checked_at` uses Australia/Sydney
+with the actual offset; timezone data is embedded. Each account row also has
+`checked_at`, an RFC3339 UTC time when that row was read or fetched: cached rows
+use the cache read/observed time, error rows use the attempt time. Percentages are numbers 0..100 or null. Reset
 strings require explicit RFC3339 timezones. `extra` is always an object.
 
 JSON output is one document for reporting commands; `--plain` uses stable tab

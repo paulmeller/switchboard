@@ -28,6 +28,7 @@ type Row struct {
 	Extra            map[string]any `json:"extra"`
 	Source           *string        `json:"source"`
 	Error            *string        `json:"error"`
+	CheckedAt        string         `json:"checked_at"`
 }
 type Report struct {
 	SchemaVersion int    `json:"schema_version"`
@@ -187,6 +188,8 @@ func CollectRows(ctx context.Context, source Source, timeout time.Duration, now 
 			got.e = c.Err()
 		}
 		cancel()
+		// Per-row read time in UTC: the attempt time, or the observed/fetch time on success.
+		r.CheckedAt = now.UTC().Format(time.RFC3339)
 		if got.e != nil || !valid(got.d, now) {
 			msg := "no verified safe source; quota unavailable"
 			if errors.Is(got.e, errGrokUnavailable) {
@@ -206,6 +209,7 @@ func CollectRows(ctx context.Context, source Source, timeout time.Duration, now 
 			continue
 		}
 		d := got.d
+		r.CheckedAt = d.ObservedAt.UTC().Format(time.RFC3339) // valid() guarantees non-zero
 		r.LoginOK = d.LoginOK
 		r.WeeklyUsedPct = d.Weekly
 		r.WeeklyResetsAt = sydneyReset(d.WeeklyReset)

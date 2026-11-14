@@ -48,7 +48,7 @@ func TestDefaultRowsAndFailures(t *testing.T) {
 		json.Unmarshal(b, &decoded)
 		for _, raw := range decoded["accounts"].([]any) {
 			row := raw.(map[string]any)
-			for _, k := range []string{"account", "plan", "login_ok", "weekly_used_pct", "weekly_resets_at", "five_hour_used_pct", "five_hour_resets_at", "extra", "source", "error"} {
+			for _, k := range []string{"account", "plan", "login_ok", "weekly_used_pct", "weekly_resets_at", "five_hour_used_pct", "five_hour_resets_at", "extra", "source", "error", "checked_at"} {
 				if _, ok := row[k]; !ok {
 					t.Fatal("missing key", k)
 				}
@@ -57,6 +57,13 @@ func TestDefaultRowsAndFailures(t *testing.T) {
 		for _, row := range r.Accounts {
 			if row.Source != nil && *row.Source != "cached normalized snapshot" {
 				t.Fatal("false live provenance")
+			}
+			want := "2026-11-11T01:00:00Z" // attempt time for error rows
+			if row.Error == nil {
+				want = "2026-11-11T00:00:00Z" // cached snapshot observed time, not now
+			}
+			if row.CheckedAt != want {
+				t.Fatal("row checked_at", row.Tool, row.CheckedAt)
 			}
 		}
 	}
@@ -92,7 +99,7 @@ func TestSnapshotSydneyTimestamps(t *testing.T) {
 		now, _ := time.Parse(time.RFC3339, tc.utc)
 		report, code := Collect(context.Background(), Snapshot{dir}, provider.NewRegistry(nil), time.Second, now)
 		row := report.Accounts[2]
-		if code != 0 || report.CheckedAt != tc.want || row.Extra["observed_at"] != tc.want || *row.WeeklyResetsAt != tc.want || *row.FiveHourResetsAt != tc.want {
+		if code != 0 || report.CheckedAt != tc.want || row.Extra["observed_at"] != tc.want || *row.WeeklyResetsAt != tc.want || *row.FiveHourResetsAt != tc.want || row.CheckedAt != tc.utc {
 			t.Fatal("snapshot timestamps must use Sydney's actual offset")
 		}
 	}

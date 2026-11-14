@@ -45,6 +45,7 @@ func Cached(ctx context.Context, source usage.Source, path string, rows []usage.
 			r.WeeklyResetsAt = e.WeeklyReset
 			r.FiveHourUsedPct = e.Five
 			r.FiveHourResetsAt = e.FiveReset
+			r.CheckedAt = e.At.UTC().Format(time.RFC3339)
 			return r
 		}
 		if old != nil && now.Sub(old.At) < ttl {
