@@ -9,6 +9,8 @@ import (
 	"strings"
 	"testing"
 	"time"
+
+	"switchboard/internal/provider"
 )
 
 // Made-up fixture: no identities, tokens or live output.
@@ -60,6 +62,15 @@ func TestAgyParse(t *testing.T) {
 	}
 }
 
+// fixtureAccounts is a generic two-account config: work keeps the process HOME,
+// second uses an isolated profile HOME and a shared quota pool.
+func fixtureAccounts(secondHome string) provider.Registry {
+	return provider.NewRegistry([]provider.Spec{
+		{Account: provider.Account{Tool: "agy", Profile: "work"}, Label: "Antigravity (work)"},
+		{Account: provider.Account{Tool: "agy", Profile: "second"}, Label: "Antigravity (second)", Home: secondHome, QuotaPool: "pool-a"},
+	})
+}
+
 func TestAgySourceEnvAndCollect(t *testing.T) {
 	envs := map[string][]string{}
 	runner := readFunc(func(_ context.Context, op Operation, env []string) ([]byte, error) {
@@ -73,32 +84,54 @@ func TestAgySourceEnvAndCollect(t *testing.T) {
 			}
 		}
 		envs[home] = env
-		if strings.HasSuffix(home, "kelly-fake") {
+		if strings.HasSuffix(home, "second-fake") {
 			return nil, errors.New("private diagnostic")
 		}
 		return []byte(agyFixture), nil
 	})
-	src := Sources{"agy": Agy{runner, "/fake", []string{"HOME=/fake", "SB_AGY_KELLY_HOME=/fake/kelly-fake"}}}
+	reg := fixtureAccounts("/fake/second-fake")
+	src := Sources{"agy": Agy{runner, "/fake", []string{"HOME=/fake"}, reg}}
 	if src.Timeout("agy") != AgyTimeout || src.Timeout("codex") != 0 {
 		t.Fatal("agy timeout")
 	}
-	report, code := Collect(context.Background(), src, time.Millisecond*500, time.Now())
-	personal, kelly := report.Accounts[4], report.Accounts[5]
-	if code != 0 || personal.Tool != "agy" || personal.Profile != "personal" || kelly.Profile != "kelly" || *kelly.Account != "Antigravity (Kelly personal)" || *personal.Account != "Antigravity (personal)" || personal.Plan != nil {
+	report, code := Collect(context.Background(), src, reg, time.Millisecond*500, time.Now())
+	if len(report.Accounts) != 8 {
+		t.Fatal("row count must be 6 + configured agy accounts")
+	}
+	work, second := report.Accounts[4], report.Accounts[5]
+	if code != 0 || work.Tool != "agy" || work.Profile != "work" || second.Profile != "second" || *second.Account != "Antigravity (second)" || *work.Account != "Antigravity (work)" || work.Plan != nil {
 		t.Fatal("agy rows")
 	}
-	if personal.WeeklyUsedPct == nil || *personal.WeeklyUsedPct != 50.29 || personal.Source == nil || personal.Error != nil {
-		t.Fatal("personal usage")
+	if report.Accounts[6].Tool != "grok" || report.Accounts[7].Profile != "plain" {
+		t.Fatal("trailing rows")
 	}
-	if kelly.WeeklyUsedPct != nil || kelly.LoginOK != nil || kelly.Error == nil || *kelly.Error != string(errAgyUnavailable) {
-		t.Fatal("kelly failure must be null with safe error")
+	if work.WeeklyUsedPct == nil || *work.WeeklyUsedPct != 50.29 || work.Source == nil || work.Error != nil || work.Extra["quota_pool"] != nil {
+		t.Fatal("work usage")
 	}
-	if envs["/fake/kelly-fake"] == nil || envs["/fake"] == nil || !contains(envs["/fake/kelly-fake"], "XDG_CONFIG_HOME=/fake/kelly-fake/.config") || contains(envs["/fake"], "XDG_CONFIG_HOME=/fake/kelly-fake/.config") {
+	if second.WeeklyUsedPct != nil || second.LoginOK != nil || second.Error == nil || *second.Error != string(errAgyUnavailable) || second.Extra["quota_pool"] != "pool-a" {
+		t.Fatal("second failure must be null with safe error and keep its pool")
+	}
+	if envs["/fake/second-fake"] == nil || envs["/fake"] == nil || !contains(envs["/fake/second-fake"], "XDG_CONFIG_HOME=/fake/second-fake/.config") || contains(envs["/fake"], "XDG_CONFIG_HOME=/fake/second-fake/.config") {
 		t.Fatal("account HOME isolation")
 	}
 	raw, _ := json.Marshal(report)
 	if strings.Contains(string(raw), "private") {
 		t.Fatal("raw diagnostic escaped")
+	}
+}
+
+func TestAgyRowsDefaultAndPool(t *testing.T) {
+	rows := Rows(provider.NewRegistry(nil))
+	if len(rows) != 7 || rows[4].Tool != "agy" || rows[4].Profile != "personal" || *rows[4].Account != "Antigravity" || len(rows[4].Extra) != 0 {
+		t.Fatal("implicit default row")
+	}
+	now := time.Now()
+	runner := readFunc(func(context.Context, Operation, []string) ([]byte, error) { return []byte(agyFixture), nil })
+	reg := fixtureAccounts("/fake/second")
+	report, _ := Collect(context.Background(), Sources{"agy": Agy{runner, "/fake", nil, reg}}, reg, time.Second, now)
+	second := report.Accounts[5]
+	if second.Extra["quota_pool"] != "pool-a" || second.Extra["primary_pool"] != "Gemini Models" || second.Extra["pools"] == nil {
+		t.Fatal("quota_pool must sit beside pools/primary_pool")
 	}
 }
 
@@ -116,7 +149,7 @@ func (slowTimed) Read(ctx context.Context, _, _ string) (Data, error) {
 func (slowTimed) Timeout(string) time.Duration { return time.Second }
 
 func TestTimedSourceRaisesRowTimeout(t *testing.T) {
-	report, code := CollectRows(context.Background(), slowTimed{}, time.Millisecond, time.Now(), []Row{{Tool: "agy", Profile: "kelly", Extra: map[string]any{}}})
+	report, code := CollectRows(context.Background(), slowTimed{}, time.Millisecond, time.Now(), []Row{{Tool: "agy", Profile: "second", Extra: map[string]any{}}})
 	if code != 0 || report.Accounts[0].Error != nil {
 		t.Fatal("per-tool timeout not applied")
 	}
@@ -131,14 +164,16 @@ func TestAgyCommandAllowlist(t *testing.T) {
 	}
 	t.Setenv("PATH", dir)
 	home := t.TempDir()
-	d, err := (Agy{Commands{}, home, []string{"PATH=" + dir, "HOME=" + home}}).Read(context.Background(), "agy", "kelly")
+	profile := filepath.Join(home, "agy-second")
+	reg := fixtureAccounts(profile)
+	d, err := (Agy{Commands{}, home, []string{"PATH=" + dir, "HOME=" + home}, reg}).Read(context.Background(), "agy", "second")
 	if err != nil || *d.Weekly != 50 {
 		t.Fatal("allowlisted command", err)
 	}
-	if _, err := os.Stat(filepath.Join(home, ".gemini-kelly")); !os.IsNotExist(err) {
+	if _, err := os.Stat(profile); !os.IsNotExist(err) {
 		t.Fatal("usage created profile home")
 	}
-	if _, err := (Agy{Commands{}, home, nil}).Read(context.Background(), "agy", "work"); !errors.Is(err, errAgyProfile) {
+	if _, err := (Agy{Commands{}, home, nil, reg}).Read(context.Background(), "agy", "personal"); !errors.Is(err, errAgyProfile) {
 		t.Fatal("unknown agy profile accepted")
 	}
 }

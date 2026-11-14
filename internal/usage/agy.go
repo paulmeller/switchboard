@@ -23,17 +23,23 @@ const (
 )
 
 // Agy reads quota with the built-in print-mode /usage slash command (not a model
-// prompt) under each account's HOME: process HOME for personal, isolated for kelly.
+// prompt) under each configured account's environment: the isolated profile
+// HOME/XDG when the account has a home, otherwise the unchanged process HOME.
 type Agy struct {
-	Runner Runner
-	Home   string
-	Env    []string
+	Runner   Runner
+	Home     string
+	Env      []string
+	Accounts provider.Registry
 }
 
 func (Agy) Timeout(string) time.Duration { return AgyTimeout }
 
 func (s Agy) Read(ctx context.Context, _, profile string) (Data, error) {
-	env, err := provider.Env(provider.Account{Tool: "agy", Profile: profile}, s.Home, s.Env)
+	spec, ok := s.Accounts.Lookup(provider.Account{Tool: "agy", Profile: profile})
+	if !ok {
+		return Data{}, errAgyProfile
+	}
+	env, err := provider.Env(spec, s.Home, s.Env)
 	if err != nil {
 		return Data{}, errAgyProfile
 	}

@@ -52,7 +52,11 @@ func (a *App) localReport(c CLI, name string) int {
 		return a.fail(2, "invalid feedback family")
 	}
 	if f.Account != "" {
-		account, err := config.ParseAccount(f.Account)
+		reg, err := a.registry(c)
+		if err != nil {
+			return a.fail(2, err.Error())
+		}
+		account, err := reg.Parse(f.Account)
 		if err != nil {
 			return a.fail(2, "invalid feedback account")
 		}

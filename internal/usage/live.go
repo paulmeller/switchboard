@@ -11,6 +11,8 @@ import (
 	"strconv"
 	"strings"
 	"time"
+
+	"switchboard/internal/provider"
 )
 
 // Operation is a closed read-only allowlist, separate from task execution.
@@ -337,7 +339,7 @@ func (s Sources) Timeout(tool string) time.Duration {
 	return 0
 }
 
-func Live(home string, env []string) Sources {
+func Live(home string, env []string, reg provider.Registry) Sources {
 	runner := Commands{}
-	return Sources{"codex": Codex{runner, home, env}, "claude": Claude{runner, home, env}, "grok": Grok{runner, env}, "agy": Agy{runner, home, env}}
+	return Sources{"codex": Codex{runner, home, env}, "claude": Claude{runner, home, env}, "grok": Grok{runner, env}, "agy": Agy{runner, home, env, reg}}
 }

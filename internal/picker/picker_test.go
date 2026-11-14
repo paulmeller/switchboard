@@ -63,7 +63,7 @@ func TestRanking(t *testing.T) {
 			for _, a := range provider.Accounts() {
 				statuses = append(statuses, provider.Status{Account: a, LoginOK: ptr(true)})
 			}
-			pick, reason, candidates := Pick([]string{"codex", "claude"}, statuses, nil, []usage.Row{tc.work, tc.personal}, 95, 10, 6, now)
+			pick, reason, candidates := Pick(provider.NewRegistry(nil), []string{"codex", "claude"}, statuses, nil, []usage.Row{tc.work, tc.personal}, 95, 10, 6, now)
 			if pick.Tool != "codex" || pick.Profile != tc.want || reason != tc.reason {
 				t.Fatalf("got %v (%s), want codex/%s (%s)", pick, reason, tc.want, tc.reason)
 			}
@@ -83,11 +83,11 @@ func TestRanking(t *testing.T) {
 		})
 	}
 	statuses := []provider.Status{{Account: provider.Account{Tool: "claude", Profile: "personal"}, LoginOK: ptr(true)}}
-	p, _, _ := Pick([]string{"codex", "claude"}, statuses, nil, nil, 95, 10, 6, now)
+	p, _, _ := Pick(provider.NewRegistry(nil), []string{"codex", "claude"}, statuses, nil, nil, 95, 10, 6, now)
 	if p.Tool != "claude" {
 		t.Fatal("family fallback")
 	}
-	p, _, _ = Pick([]string{"codex", "claude"}, statuses, state.State{"claude/personal": now.Add(time.Hour)}, nil, 95, 10, 6, now)
+	p, _, _ = Pick(provider.NewRegistry(nil), []string{"codex", "claude"}, statuses, state.State{"claude/personal": now.Add(time.Hour)}, nil, 95, 10, 6, now)
 	if p.Valid() {
 		t.Fatal("cooldown must exclude")
 	}
@@ -122,7 +122,7 @@ func TestRankingOverrides(t *testing.T) {
 				{Tool: "codex", Profile: "work", WeeklyUsedPct: ptr(tc.used), WeeklyResetsAt: &reset},
 				{Tool: "codex", Profile: "personal", WeeklyUsedPct: ptr(13.)},
 			}
-			pick, _, _ := Pick([]string{"codex"}, statuses, nil, rows, tc.cap, tc.minimum, tc.hours, now)
+			pick, _, _ := Pick(provider.NewRegistry(nil), []string{"codex"}, statuses, nil, rows, tc.cap, tc.minimum, tc.hours, now)
 			if pick.Profile != tc.want {
 				t.Fatalf("got %s, want %s", pick.Profile, tc.want)
 			}
@@ -187,5 +187,72 @@ func TestCache(t *testing.T) {
 	b, _ := os.ReadFile(path)
 	if len(b) == 0 {
 		t.Fatal("cache")
+	}
+}
+
+func poolRegistry() provider.Registry {
+	return provider.NewRegistry([]provider.Spec{
+		{Account: provider.Account{Tool: "agy", Profile: "work"}, Label: "Antigravity (work)", QuotaPool: "pool-a"},
+		{Account: provider.Account{Tool: "agy", Profile: "second"}, Label: "Antigravity (second)", Home: "/profiles/second", QuotaPool: "pool-a"},
+		{Account: provider.Account{Tool: "agy", Profile: "third"}, Label: "Antigravity (third)", QuotaPool: "pool-b"},
+		{Account: provider.Account{Tool: "agy", Profile: "solo"}, Label: "Antigravity (solo)"},
+	})
+}
+
+func TestSharedQuotaPools(t *testing.T) {
+	now := time.Date(2026, time.November, 11, 21, 0, 0, 0, time.UTC)
+	reg := poolRegistry()
+	signed := func(ids ...string) []provider.Status {
+		out := []provider.Status{}
+		for _, a := range reg.Accounts() {
+			ok := len(ids) == 0
+			for _, id := range ids {
+				ok = ok || a.ID() == id
+			}
+			out = append(out, provider.Status{Account: a, LoginOK: ptr(ok)})
+		}
+		return out
+	}
+	row := func(profile string, used float64) usage.Row {
+		return usage.Row{Tool: "agy", Profile: profile, WeeklyUsedPct: ptr(used)}
+	}
+	for _, tc := range []struct {
+		name     string
+		statuses []provider.Status
+		rows     []usage.Row
+		order    []string
+		want     string
+	}{
+		// The secondary has far more headroom, but is never extra capacity.
+		{"representative only", signed("agy/work", "agy/second"), []usage.Row{row("work", 60), row("second", 0)}, []string{"agy"}, "agy/work"},
+		// Exhausted representative: no other pool member, no eligible agy account.
+		{"exhausted pool exits", signed("agy/work", "agy/second"), []usage.Row{row("work", 97), row("second", 0)}, []string{"agy"}, ""},
+		{"fully used pool exits", signed("agy/work", "agy/second"), []usage.Row{row("work", 100), row("second", 0)}, []string{"agy"}, ""},
+		// Exhausted pool falls through to an independent pool or unpooled account.
+		{"other pool independent", signed(), []usage.Row{row("work", 97), row("second", 0), row("third", 50), row("solo", 80)}, []string{"agy"}, "agy/third"},
+		{"unpooled independent", signed("agy/work", "agy/second", "agy/solo"), []usage.Row{row("work", 99), row("second", 0), row("solo", 96)}, []string{"agy"}, "agy/solo"},
+		{"pools compete on headroom", signed(), []usage.Row{row("work", 10), row("second", 90), row("third", 50), row("solo", 80)}, []string{"agy"}, "agy/work"},
+		// Secondary signed in alone is not eligible automatically.
+		{"secondary alone", signed("agy/second"), []usage.Row{row("second", 0)}, []string{"agy"}, ""},
+		// Routing: an exhausted pool falls through to another family.
+		{"routing falls through", signed("agy/work", "agy/second", "codex/work"), []usage.Row{row("work", 96), row("second", 0)}, []string{"agy", "codex"}, "codex/work"},
+		// Unknown usage keeps the representative eligible.
+		{"unknown representative", signed("agy/work", "agy/second"), []usage.Row{row("second", 0)}, []string{"agy"}, "agy/work"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			pick, _, candidates := Pick(reg, tc.order, tc.statuses, nil, tc.rows, 95, 10, 6, now)
+			got := ""
+			if pick.Valid() {
+				got = pick.ID()
+			}
+			if got != tc.want {
+				t.Fatalf("got %q, want %q", got, tc.want)
+			}
+			for _, c := range candidates {
+				if c.Account == "agy/second" && (c.Chosen || c.Skipped == nil || c.QuotaPool == nil || *c.QuotaPool != "pool-a") {
+					t.Fatal("pool secondary must be skipped and labelled")
+				}
+			}
+		})
 	}
 }

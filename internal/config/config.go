@@ -80,6 +80,50 @@ type Config struct {
 	DifficultyFloor       float64             `toml:"difficulty_floor"`
 	Accounts              map[string]Criteria `toml:"accounts"`
 	Rules                 []Rule              `toml:"rules"`
+	ToolAccounts          []ToolAccount       `toml:"tool_accounts"`
+	// Registry is derived from ToolAccounts: built-in Claude/Codex accounts,
+	// then configured Antigravity accounts or the implicit agy/personal.
+	Registry provider.Registry `toml:"-"`
+}
+
+// ToolAccount declares one Antigravity launch account. Claude and Codex
+// accounts are built in and cannot be declared here.
+type ToolAccount struct {
+	ID        string `toml:"id"`
+	Label     string `toml:"label"`
+	Home      string `toml:"home"`
+	QuotaPool string `toml:"quota_pool"`
+}
+
+var poolID = regexp.MustCompile(`^[A-Za-z0-9][A-Za-z0-9_.:-]{0,63}$`)
+
+// Registry validates tool_accounts and returns the launch account registry.
+func Registry(accounts []ToolAccount) (provider.Registry, error) {
+	specs := []provider.Spec{}
+	seen := map[string]bool{}
+	for _, t := range accounts {
+		tool, profile, ok := strings.Cut(t.ID, "/")
+		a := provider.Account{Tool: tool, Profile: profile}
+		if !ok || tool != "agy" || !a.Valid() {
+			return nil, errors.New("tool_accounts id must be agy/<profile> with a letter, digit, '.', '_' or '-' profile")
+		}
+		if seen[a.ID()] {
+			return nil, errors.New("duplicate tool_accounts id " + a.ID())
+		}
+		seen[a.ID()] = true
+		label := strings.TrimSpace(t.Label)
+		if label == "" || label != t.Label || len(label) > 64 || strings.ContainsAny(label, "@\r\n\t") {
+			return nil, errors.New("tool_accounts " + a.ID() + " label must be non-empty, at most 64 characters, and not an email")
+		}
+		if t.Home != "" && (strings.ContainsAny(t.Home, "\r\n") || !(filepath.IsAbs(t.Home) || t.Home == "~" || strings.HasPrefix(t.Home, "~/"))) {
+			return nil, errors.New("tool_accounts " + a.ID() + " home must be absolute or start with ~/")
+		}
+		if t.QuotaPool != "" && !poolID.MatchString(t.QuotaPool) {
+			return nil, errors.New("tool_accounts " + a.ID() + " quota_pool must be a simple id")
+		}
+		specs = append(specs, provider.Spec{Account: a, Label: label, Home: t.Home, QuotaPool: t.QuotaPool})
+	}
+	return provider.NewRegistry(specs), nil
 }
 
 func Path(home, xdg string) string {
@@ -89,13 +133,18 @@ func Path(home, xdg string) string {
 	return filepath.Join(xdg, "switchboard", "config.toml")
 }
 
-func ParseAccount(s string) (provider.Account, error) {
-	t, p, _ := strings.Cut(s, "/")
-	a := provider.Account{Tool: t, Profile: p}
-	if !a.Valid() {
-		return a, errors.New("account must be claude/work, claude/personal, codex/work, codex/personal, agy/personal or agy/kelly")
+// accounts returns the loaded registry, or the built-in default for a Config
+// constructed without Load.
+func (c Config) accounts() provider.Registry {
+	if c.Registry == nil {
+		return provider.NewRegistry(nil)
 	}
-	return a, nil
+	return c.Registry
+}
+
+// ParseAccount accepts only a configured full tool/profile id.
+func (c Config) ParseAccount(s string) (provider.Account, error) {
+	return c.accounts().Parse(s)
 }
 
 func Load(path, envDefault, flagDefault string, overrides ...Classifier) (Config, error) {
@@ -117,6 +166,9 @@ func Load(path, envDefault, flagDefault string, overrides ...Classifier) (Config
 		}
 	} else if !os.IsNotExist(e) {
 		return c, errors.New("cannot read config")
+	}
+	if c.Registry, e = Registry(c.ToolAccounts); e != nil {
+		return c, e
 	}
 	if envDefault != "" {
 		c.Pin = envDefault
@@ -141,7 +193,7 @@ func Load(path, envDefault, flagDefault string, overrides ...Classifier) (Config
 	if e = c.Classifier.Validate(); e != nil {
 		return c, e
 	}
-	if _, e = Family(c.Default); e != nil {
+	if _, e = c.Family(c.Default); e != nil {
 		return c, e
 	}
 	for _, floor := range []float64{c.AccountFloor, c.DifficultyFloor} {
@@ -150,7 +202,7 @@ func Load(path, envDefault, flagDefault string, overrides ...Classifier) (Config
 		}
 	}
 	if c.Pin != "" {
-		if _, e = ParseAccount(c.Pin); e != nil {
+		if _, e = c.ParseAccount(c.Pin); e != nil {
 			return c, e
 		}
 	}
@@ -196,7 +248,7 @@ func Load(path, envDefault, flagDefault string, overrides ...Classifier) (Config
 		if strings.TrimSpace(r.Contains) == "" {
 			return c, errors.New("rule contains must not be empty")
 		}
-		if _, e = Family(r.Account); e != nil {
+		if _, e = c.Family(r.Account); e != nil {
 			return c, e
 		}
 	}
@@ -213,9 +265,9 @@ func (c Config) Order(task string) ([]string, string) {
 			break
 		}
 	}
-	a, _ := Family(target)
+	a, _ := c.Family(target)
 	out := []string{a}
-	for _, other := range provider.Accounts() {
+	for _, other := range c.accounts().Accounts() {
 		if other.Tool != a && (len(out) == 1 || out[len(out)-1] != other.Tool) {
 			out = append(out, other.Tool)
 		}
@@ -236,10 +288,11 @@ func Fallback(order []string) []string {
 	return out
 }
 
-func Family(s string) (string, error) {
+// Family accepts a bare launchable family or a configured full account id.
+func (c Config) Family(s string) (string, error) {
 	if s == "claude" || s == "codex" || s == "agy" {
 		return s, nil
 	}
-	a, err := ParseAccount(s)
+	a, err := c.ParseAccount(s)
 	return a.Tool, err
 }

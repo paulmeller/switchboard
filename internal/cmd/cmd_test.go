@@ -22,7 +22,8 @@ type fakeProbe struct {
 	signed bool
 }
 
-func (p *fakeProbe) Status(_ context.Context, a provider.Account) provider.Status {
+func (p *fakeProbe) Status(_ context.Context, s provider.Spec) provider.Status {
+	a := s.Account
 	p.calls++
 	v := p.signed
 	return provider.Status{Account: a, LoginOK: &v}
@@ -228,7 +229,8 @@ func TestCalibrationProbabilityAndDifficulty(t *testing.T) {
 
 type profileProbe struct{ signed map[string]bool }
 
-func (p profileProbe) Status(_ context.Context, a provider.Account) provider.Status {
+func (p profileProbe) Status(_ context.Context, s provider.Spec) provider.Status {
+	a := s.Account
 	v := p.signed[a.ID()]
 	return provider.Status{Account: a, LoginOK: &v}
 }

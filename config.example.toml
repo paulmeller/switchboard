@@ -1,8 +1,8 @@
-# Built-in accounts: claude/work, claude/personal, codex/work, codex/personal,
-# agy/personal (process HOME) and agy/kelly (isolated HOME, default ~/.gemini-kelly;
-# override with the SB_AGY_KELLY_HOME environment variable, not TOML).
+# Built-in accounts: claude/work, claude/personal, codex/work, codex/personal.
+# Antigravity accounts come from [[tool_accounts]] below; with none declared sb
+# uses one implicit agy/personal (label "Antigravity", process HOME, no pool).
 # Antigravity is used only when selected (rule/default "agy", Jev, or a pin),
-# never as a fallback. Usage rows agy/personal and agy/kelly come from the
+# never as a fallback. One usage row per Antigravity account comes from the
 # built-in `agy --output-format json --print /usage` slash command (20s per row).
 # Defaults/rules prefer only a family; legacy tool/profile values ignore profile.
 default = "codex"
@@ -62,10 +62,26 @@ account = "codex"
 # [accounts.agy]
 # what = "Tasks that explicitly ask for Antigravity or Gemini models via the agy CLI"
 #
-# Route matching tasks to Antigravity (balances agy/personal and agy/kelly):
+# Route matching tasks to Antigravity (balances auto-eligible agy accounts):
 # [[rules]]
 # contains = "antigravity"
 # account = "agy"
+
+# Antigravity accounts (optional). id = "agy/<profile>" (positional pin name)
+# and a safe label (never an email) are required. home is optional: absolute or
+# ~/...; omitted keeps the process HOME, set isolates HOME/XDG under it.
+# quota_pool is optional: accounts sharing an id share one allowance; automatic
+# selection only uses the first configured member and never another member for
+# capacity. Other members are used only when pinned (sb agy second).
+# [[tool_accounts]]
+# id = "agy/work"
+# label = "Antigravity (work)"
+#
+# [[tool_accounts]]
+# id = "agy/second"
+# label = "Antigravity (second)"
+# home = "/path/to/agy-second-profile"
+# quota_pool = "shared-pool-id"
 
 # Routed tasks, including dry-run/classify, append a local JSONL decision.
 # $XDG_DATA_HOME/switchboard/decisions.jsonl (default ~/.local/share/switchboard).

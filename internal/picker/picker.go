@@ -22,14 +22,30 @@ type Candidate struct {
 	Exhausted   bool     `json:"exhausted"`
 	Headroom    *float64 `json:"headroom"`
 	Chosen      bool     `json:"chosen"`
-	account     provider.Account
-	reset       time.Time
+	QuotaPool   *string  `json:"quota_pool,omitempty"`
+	// Skipped explains exclusion from automatic selection by quota-pool rules.
+	Skipped *string `json:"skipped,omitempty"`
+	account provider.Account
+	reset   time.Time
 }
 
-func Pick(order []string, statuses []provider.Status, cooldown state.State, rows []usage.Row, cap, minHeadroom, windowHours float64, now time.Time) (provider.Account, string, []Candidate) {
+// Shared quota pools: only the pool representative (first configured member)
+// is a candidate, and an exhausted representative is excluded rather than
+// replaced by another member, so selection falls through to the next family.
+const (
+	skipPoolMember    = "shared quota pool; not the pool representative"
+	skipPoolExhausted = "shared quota pool exhausted"
+)
+
+func Pick(reg provider.Registry, order []string, statuses []provider.Status, cooldown state.State, rows []usage.Row, cap, minHeadroom, windowHours float64, now time.Time) (provider.Account, string, []Candidate) {
 	candidates := []Candidate{}
-	for _, a := range provider.Accounts() {
+	for _, spec := range reg {
+		a := spec.Account
 		c := Candidate{Account: a.ID(), account: a, Cooldown: !cooldown.Eligible(a, now)}
+		if spec.QuotaPool != "" {
+			pool := spec.QuotaPool
+			c.QuotaPool = &pool
+		}
 		for _, s := range statuses {
 			if s.Account == a {
 				c.Login = s.LoginOK
@@ -60,6 +76,13 @@ func Pick(order []string, statuses []provider.Status, cooldown state.State, rows
 				}
 			}
 		}
+		if !reg.Auto(a) {
+			skip := skipPoolMember
+			c.Skipped = &skip
+		} else if c.QuotaPool != nil && c.Exhausted {
+			skip := skipPoolExhausted
+			c.Skipped = &skip
+		}
 		candidates = append(candidates, c)
 	}
 	harvest := func(c Candidate) bool {
@@ -69,7 +92,7 @@ func Pick(order []string, statuses []provider.Status, cooldown state.State, rows
 	for _, family := range order {
 		indexes := []int{}
 		for i, c := range candidates {
-			if c.account.Tool == family && c.Login != nil && *c.Login && !c.Cooldown {
+			if c.account.Tool == family && c.Login != nil && *c.Login && !c.Cooldown && c.Skipped == nil {
 				indexes = append(indexes, i)
 			}
 		}

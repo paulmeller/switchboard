@@ -9,6 +9,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"regexp"
 	"strings"
 	"syscall"
 	"time"
@@ -19,43 +20,138 @@ type Account struct {
 	Profile string `json:"profile"`
 }
 
+// Accounts returns the four built-in Claude/Codex launch accounts. Antigravity
+// accounts come from configuration through a Registry.
 func Accounts() []Account {
-	return []Account{{"claude", "work"}, {"claude", "personal"}, {"codex", "work"}, {"codex", "personal"}, {"agy", "personal"}, {"agy", "kelly"}}
+	return []Account{{"claude", "work"}, {"claude", "personal"}, {"codex", "work"}, {"codex", "personal"}}
 }
 func (a Account) ID() string { return a.Tool + "/" + a.Profile }
+
+var profileName = regexp.MustCompile(`^[A-Za-z0-9][A-Za-z0-9_.-]{0,63}$`)
+
+// Valid is a syntactic check: built-in Claude/Codex profiles, or an agy profile
+// name. Whether an agy profile is configured is decided by a Registry.
 func (a Account) Valid() bool {
 	if a.Tool == "agy" {
-		return a.Profile == "personal" || a.Profile == "kelly"
+		return profileName.MatchString(a.Profile)
 	}
 	return (a.Tool == "claude" || a.Tool == "codex") && (a.Profile == "work" || a.Profile == "personal")
 }
 
-// Label is a safe static display name; it never contains an email or identity.
-func (a Account) Label() string {
-	switch a.ID() {
-	case "agy/personal":
-		return "Antigravity (personal)"
-	case "agy/kelly":
-		return "Antigravity (Kelly personal)"
-	}
-	return ""
+// ParseID splits tool/profile and applies the syntactic Valid check only.
+func ParseID(s string) (Account, bool) {
+	t, p, ok := strings.Cut(s, "/")
+	a := Account{Tool: t, Profile: p}
+	return a, ok && a.Valid()
 }
 
-// AgyKellyHomeEnv overrides Kelly's isolated Antigravity HOME (default ~/.gemini-kelly).
-const AgyKellyHomeEnv = "SB_AGY_KELLY_HOME"
+// Spec is a launch account with its configuration. Label, Home and QuotaPool
+// apply to Antigravity accounts only.
+type Spec struct {
+	Account
+	// Label is a safe configured display name, never an email or identity.
+	Label string
+	// Home is the agy profile HOME; empty keeps the process HOME. A leading
+	// "~/" expands against the process home at use time.
+	Home string
+	// QuotaPool is an opaque id; accounts sharing it share one allowance.
+	QuotaPool string
+}
 
-// AgyHome is the HOME the genuine agy binary sees for an Antigravity account.
-// Personal keeps the process HOME; Kelly uses a separate profile HOME.
-func AgyHome(profile, home string, env []string) string {
-	if profile != "kelly" {
-		return home
+// DefaultAgy is the implicit Antigravity account when none is configured.
+func DefaultAgy() Spec {
+	return Spec{Account: Account{"agy", "personal"}, Label: "Antigravity"}
+}
+
+// Registry is the ordered set of launch accounts: built-in Claude/Codex first,
+// then configured Antigravity accounts (or the implicit default).
+type Registry []Spec
+
+func NewRegistry(agy []Spec) Registry {
+	r := Registry{}
+	for _, a := range Accounts() {
+		r = append(r, Spec{Account: a})
 	}
-	for _, v := range env {
-		if k, x, _ := strings.Cut(v, "="); k == AgyKellyHomeEnv && x != "" {
-			return x
+	if len(agy) == 0 {
+		agy = []Spec{DefaultAgy()}
+	}
+	return append(r, agy...)
+}
+
+func (r Registry) Accounts() []Account {
+	out := make([]Account, 0, len(r))
+	for _, s := range r {
+		out = append(out, s.Account)
+	}
+	return out
+}
+
+// Spec returns the configured spec, or a bare spec when the account is unknown.
+func (r Registry) Spec(a Account) Spec {
+	if s, ok := r.Lookup(a); ok {
+		return s
+	}
+	return Spec{Account: a}
+}
+
+func (r Registry) Lookup(a Account) (Spec, bool) {
+	for _, s := range r {
+		if s.Account == a {
+			return s, true
 		}
 	}
-	return filepath.Join(home, ".gemini-kelly")
+	return Spec{}, false
+}
+
+// IDs lists configured account ids in order, for actionable errors.
+func (r Registry) IDs() []string {
+	out := make([]string, 0, len(r))
+	for _, s := range r {
+		out = append(out, s.ID())
+	}
+	return out
+}
+
+// Parse accepts only a configured full tool/profile id.
+func (r Registry) Parse(s string) (Account, error) {
+	a, _ := ParseID(s)
+	if _, ok := r.Lookup(a); !ok {
+		return a, errors.New("account must be a configured id: " + strings.Join(r.IDs(), ", "))
+	}
+	return a, nil
+}
+
+// Auto reports whether automatic (usage-based) selection may pick the account.
+// Within a shared quota pool only the first configured member, the pool's
+// representative, is eligible; other members are used only when pinned.
+func (r Registry) Auto(a Account) bool {
+	s, ok := r.Lookup(a)
+	if !ok {
+		return false
+	}
+	if s.QuotaPool == "" {
+		return true
+	}
+	for _, other := range r {
+		if other.QuotaPool == s.QuotaPool {
+			return other.Account == a
+		}
+	}
+	return true
+}
+
+// AgyHome is the HOME the genuine agy binary sees for an Antigravity account:
+// the configured profile home, or the process home when none is configured.
+func AgyHome(s Spec, home string) string {
+	switch {
+	case s.Home == "":
+		return home
+	case s.Home == "~":
+		return home
+	case strings.HasPrefix(s.Home, "~/"):
+		return filepath.Join(home, s.Home[2:])
+	}
+	return s.Home
 }
 
 // AgyLoginMarker is the path pattern whose existence (never contents) indicates
@@ -71,7 +167,8 @@ func Home(home, profile string) string {
 	return filepath.Join(home, ".codex")
 }
 
-func Env(a Account, home string, env []string) ([]string, error) {
+func Env(s Spec, home string, env []string) ([]string, error) {
+	a := s.Account
 	if !a.Valid() {
 		return nil, errors.New("invalid account")
 	}
@@ -93,9 +190,9 @@ func Env(a Account, home string, env []string) ([]string, error) {
 		values["CLAUDE_CODE_OAUTH_TOKEN"] = values[key]
 		delete(values, "ANTHROPIC_API_KEY")
 	} else if a.Tool == "agy" {
-		if a.Profile == "kelly" {
+		if s.Home != "" {
 			// Mirror the isolated-profile launcher: agy derives all state from HOME/XDG.
-			profile := AgyHome(a.Profile, home, env)
+			profile := AgyHome(s, home)
 			if values["AGY_REAL_HOME"] == "" {
 				values["AGY_REAL_HOME"] = values["HOME"]
 				if values["AGY_REAL_HOME"] == "" {
@@ -124,8 +221,9 @@ func Exec(path string, args, env []string) error {
 	return syscall.Exec(path, append([]string{path}, args...), env)
 }
 
-func Launch(a Account, args []string, home string, env []string, dry bool, execute Executor) error {
-	mapped, err := Env(a, home, env)
+func Launch(s Spec, args []string, home string, env []string, dry bool, execute Executor) error {
+	a := s.Account
+	mapped, err := Env(s, home, env)
 	if err != nil {
 		return err
 	}
@@ -141,7 +239,7 @@ func Launch(a Account, args []string, home string, env []string, dry bool, execu
 			return errors.New("cannot create Codex home")
 		}
 	}
-	if a.ID() == "agy/kelly" {
+	if a.Tool == "agy" && s.Home != "" {
 		// Match the profile launcher's umask 077; restored only if exec returns.
 		defer syscall.Umask(syscall.Umask(0o077))
 	}
@@ -161,7 +259,7 @@ func TaskArgs(a Account, task string) []string {
 
 // Probe has no general command or prompt input. Implementations only receive account identities.
 type Probe interface {
-	Status(context.Context, Account) Status
+	Status(context.Context, Spec) Status
 }
 type Status struct {
 	Account
@@ -187,10 +285,11 @@ func (b *limited) Write(p []byte) (int, error) {
 	return n, nil
 }
 
-func (l Live) Status(ctx context.Context, a Account) Status {
+func (l Live) Status(ctx context.Context, spec Spec) Status {
+	a := spec.Account
 	s := Status{Account: a}
 	fail := func(msg string) Status { s.Error = &msg; return s }
-	env, err := Env(a, l.Home, l.Env)
+	env, err := Env(spec, l.Home, l.Env)
 	if err != nil {
 		return fail("mapped environment unavailable")
 	}
@@ -204,7 +303,7 @@ func (l Live) Status(ctx context.Context, a Account) Status {
 		if _, err := exec.LookPath("agy"); err != nil {
 			return fail("tool missing on PATH; install the genuine CLI")
 		}
-		info, err := os.Stat(AgyLoginMarker(AgyHome(a.Profile, l.Home, l.Env)))
+		info, err := os.Stat(AgyLoginMarker(AgyHome(spec, l.Home)))
 		ok := err == nil && info.Mode().IsRegular()
 		if err != nil && !os.IsNotExist(err) {
 			return fail("sign-in marker unreadable; check the profile directory")

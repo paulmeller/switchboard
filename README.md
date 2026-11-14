@@ -13,7 +13,7 @@ Do not install over existing launchers.
 ./build/sb --help
 ./build/sb claude work -- --version
 ./build/sb codex personal -- login status
-./build/sb agy kelly -- --help
+./build/sb agy work -- --help
 ./build/sb --dry-run agy
 ./build/sb status --json
 ./build/sb doctor --plain
@@ -31,7 +31,7 @@ Do not install over existing launchers.
 Explicit `claude`, `codex` and `agy` commands balance signed-in accounts outside cooldown
 within the named family using usage/reset ranking, without a classifier or family
 fallback. Only an explicit `--account tool/profile` flag or positional profile
-selector (work/personal; for agy personal/kelly) pins an account and bypasses status/usage/cooldown checks. The flag must
+selector (work/personal; for agy a configured profile) pins an account and bypasses status/usage/cooldown checks. The flag must
 match the named family; `SB_ACCOUNT` and TOML `pin` apply only to task routing.
 No eligible account in the named family exits 3. The optional profile
 selector and separator `--` are removed; remaining argv is forwarded unchanged. Put sb
@@ -42,23 +42,53 @@ fail safely. Existing shell/Keychain exports supply these values; sb does not
 extract them. Codex sets CODEX_HOME to ~/.codex or ~/.codex-personal, creating it
 only on an actual launch. Other environment variables are preserved.
 
-Antigravity (`agy`) has two launch accounts, both running the genuine `agy` on PATH:
-`agy/personal` keeps the process HOME and environment unchanged; `agy/kelly`
-("Antigravity (Kelly personal)") uses an isolated profile HOME, default
-`~/.gemini-kelly`, overridable with `SB_AGY_KELLY_HOME`. For Kelly sb sets
-`HOME` to the profile, `AGY_REAL_HOME` to the original HOME (unless already set),
+Antigravity (`agy`) accounts are declared in the sb config, not in code. Each
+`[[tool_accounts]]` entry names one account; every one runs the genuine `agy` on PATH:
+
+```toml
+[[tool_accounts]]
+id = "agy/work"                  # required; agy/<profile>; `sb agy work` pins it
+label = "Antigravity (work)"     # required; safe display label, never an email
+
+[[tool_accounts]]
+id = "agy/second"
+label = "Antigravity (second)"
+home = "/path/to/agy-second-profile" # optional; absolute or ~/...
+quota_pool = "shared-pool-id"        # optional; opaque shared-allowance id
+```
+
+With no `tool_accounts`, sb uses one implicit `agy/personal` ("Antigravity", no
+home, no pool), so `sb agy`, `sb agy personal` and `--account agy/personal` work
+out of the box. Declaring any account replaces the implicit one. Only `agy/...`
+ids are accepted (Claude/Codex accounts are built in); empty or bare `agy` ids,
+missing labels, duplicate ids, relative homes and unknown fields fail with exit 2.
+Adding or removing an account is a config edit only.
+
+An account without `home` keeps the process HOME and environment unchanged. With
+`home`, sb sets `HOME` to it, `AGY_REAL_HOME` to the original HOME (unless already set),
 `XDG_CONFIG_HOME`, `XDG_DATA_HOME`, `XDG_CACHE_HOME` and `XDG_STATE_HOME` to
 `.config`, `.local/share`, `.cache` and `.local/state` under it, and umask 077, matching
 an isolated-profile wrapper. sb never creates, reads or copies profile files.
-`sb agy` balances the two accounts; `sb agy kelly`, `sb agy personal` or
-`--account agy/kelly` pin. Routed tasks start `agy --prompt-interactive "<task>"`.
+`sb agy` balances auto-eligible accounts; `sb agy <profile>` or
+`--account agy/<profile>` pins. Routed tasks start `agy --prompt-interactive "<task>"`.
+
+Shared quota pools: accounts with the same `quota_pool` share one allowance, so sb
+never uses another member to gain capacity. Automatic selection (unpinned `sb agy`,
+routed tasks) only considers the pool representative, the first configured
+member. If the representative is at or over `usage_exhausted_pct`, it is skipped
+and no other member is tried: routing falls through to another family, and
+`sb agy` exits 3 unless another independent agy account is eligible. Other pool
+members are used only when pinned. Each pooled account still gets its own
+`sb usage` row with `extra.quota_pool`; dry-run candidates show `quota_pool` and
+`skipped`. Accounts in different pools, or none, are independent.
 
 `status` makes bounded genuine `claude auth status --json` and `codex login status`
 checks for the four Claude/Codex launcher identities. Antigravity status runs no
 subprocess and sends no prompt: it requires `agy` on PATH and reports signed-in when
 `<account HOME>/.gemini/antigravity-cli/antigravity-oauth-token` exists (stat only;
 contents are never opened). A present marker can still be an expired sign-in, so
-six rows are reported but none implies credits. Only recognized booleans and
+one row per launch account (four Claude/Codex plus each Antigravity account) is
+reported but none implies credits. Only recognized booleans and
 fixed diagnostics reach output. Unrecognized responses remain unknown. No live
 account checks were used by the test suite. `doctor` checks executable presence (claude, codex, agy),
 exported variable presence, Codex directories, Antigravity account HOME directories, and on macOS Keychain service
@@ -90,8 +120,10 @@ and >= 0; zero disables harvesting). Prefer the soonest binding reset among thes
 accounts; otherwise prefer the most headroom. Under-cap accounts below the minimum
 still rank above unknown usage. Exhausted accounts with remaining quota prefer
 most headroom. Fully used accounts prefer the soonest known binding reset, with
-missing resets last. Ties prefer work before personal (Antigravity: personal before kelly). Task routing falls back to
-another family only when none is signed in outside cooldown; none anywhere exits 3.
+missing resets last. Ties prefer work before personal (Antigravity: config order). Task routing falls back to
+another family only when none is signed in outside cooldown, or when the selected
+family's only auto-eligible candidates are exhausted shared-pool representatives;
+none anywhere exits 3.
 Unknown stays unknown and never fails a pick solely for missing usage.
 
 `--account` > `SB_ACCOUNT` > TOML `pin` hard-pins an exact tool/profile, bypassing
@@ -107,8 +139,10 @@ default 0.5; legacy `confidence` maps as described below.
 
 Routing reuses the read-only usage collectors for eligible launch profiles only,
 with a two-second timeout per row; Antigravity rows use 20 seconds and are fetched
-only when Antigravity is the selected family (so an unpinned `sb agy` can wait up
-to 40 seconds on a cold cache). `sb usage` remains independent, eight rows, five
+only when Antigravity is the selected family, and only for auto-eligible accounts
+(pool representatives and unpooled accounts), so an unpinned `sb agy` can wait up
+to 20 seconds per such account on a cold cache. `sb usage` remains independent,
+6 + N_agy rows (7 with the implicit default), five
 seconds per row (Antigravity 20 seconds), without Jev.
 Normalized numeric windows/reset times are cached in
 $XDG_STATE_HOME/switchboard/usage-cache.json (default
@@ -272,10 +306,12 @@ overrides are removed. These logins differ from the token-mapped `sb status`
 identities. Claude quotas remain null with an explicit explanation because TUI
 `/usage` is unsafe to automate.
 
-Antigravity rows are keyed by account (`agy/personal`, `agy/kelly`) so routing can
-use them; account values are static labels, never emails, and plans stay null. Each
-row runs only `agy --output-format json --print /usage` under that account's
-environment (Kelly's isolated HOME/XDG). Print mode expands built-in slash commands
+Antigravity rows are keyed by configured account (for example `agy/work`,
+`agy/second`; default `agy/personal`) so routing can use them; `account` is the
+configured label, never an email, plans stay null, and `extra.quota_pool` carries
+the configured pool id when set. Each row runs only
+`agy --output-format json --print /usage` under that account's environment (the
+isolated HOME/XDG when the account has `home`, otherwise the process HOME). Print mode expands built-in slash commands
 (`--disable-slash-commands` exists to turn that off; agy logs "running slash
 command /usage"), so this is the built-in usage command, not a model prompt; no
 other text is ever sent and `/credits` is not called. The last column-zero JSON
@@ -304,7 +340,7 @@ not the CLI default or an automatic fallback. It rejects unknown fields and
 invalid numeric/time values and labels output `cached normalized snapshot`, with
 `extra.observed_at` and `extra.age_seconds`. It never imports provider files.
 
-`sb usage --json` always emits one complete eight-row document, including on
+`sb usage --json` always emits one complete document with every row, including on
 all-source failure (exit 1). Partial success exits 0 with per-row errors. Live
 sources are labeled explicitly; missing or unsafe sources return null metrics
 and fixed diagnostics. Plans are configured labels, not inferred subscriptions.
@@ -317,10 +353,9 @@ Stable version 1 shape (all entry keys are always present):
 {"schema_version":1,"checked_at":"2026-11-11T21:34:00+11:00","accounts":[{"tool":"claude","profile":"work","account":null,"plan":"Ultra","login_ok":null,"weekly_used_pct":null,"weekly_resets_at":null,"five_hour_used_pct":null,"five_hour_resets_at":null,"extra":{},"source":null,"error":"no verified safe source; quota unavailable"}]}
 ```
 
-Actual reports contain exactly eight built-in rows: Claude work/personal (Ultra),
-Codex work (Team) and personal (Plus), Antigravity personal and Kelly personal
-(account rows replacing the former Gemini and Claude/GPT pool rows), Grok CLI,
-and plain Claude. `tool` is an extensible string, not a closed enum; consumers may
+Actual reports contain 6 + N_agy rows in this order: Claude work/personal (Ultra),
+Codex work (Team) and personal (Plus), one row per configured Antigravity account
+in config order (or the implicit `agy/personal`), Grok CLI, and plain Claude. `tool` is an extensible string, not a closed enum; consumers may
 append tools such as grokbot. `checked_at` uses Australia/Sydney with the actual
 offset; timezone data is embedded. Percentages are numbers 0..100 or null. Reset
 strings require explicit RFC3339 timezones. `extra` is always an object.

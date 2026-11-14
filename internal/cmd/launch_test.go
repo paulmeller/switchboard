@@ -272,8 +272,8 @@ func TestExplicitFamilyEligibility(t *testing.T) {
 
 type unknownProbe struct{}
 
-func (unknownProbe) Status(_ context.Context, a provider.Account) provider.Status {
-	return provider.Status{Account: a}
+func (unknownProbe) Status(_ context.Context, s provider.Spec) provider.Status {
+	return provider.Status{Account: s.Account}
 }
 
 func TestExplicitFamilyLaunchLogBeforeExec(t *testing.T) {

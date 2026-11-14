@@ -11,6 +11,8 @@ import (
 	"path/filepath"
 	"time"
 	_ "time/tzdata"
+
+	"switchboard/internal/provider"
 )
 
 type Row struct {
@@ -33,21 +35,35 @@ type Report struct {
 	Accounts      []Row  `json:"accounts"`
 }
 
-func Defaults() []Row {
+// Rows lists the report rows: built-in Claude/Codex accounts, one row per
+// configured Antigravity account (or the implicit default), Grok and plain Claude.
+func Rows(reg provider.Registry) []Row {
 	rows := []Row{}
-	for _, v := range [][4]string{{"claude", "work", "Ultra"}, {"claude", "personal", "Ultra"}, {"codex", "work", "Team"}, {"codex", "personal", "Plus"}, {"agy", "personal", "", "Antigravity (personal)"}, {"agy", "kelly", "", "Antigravity (Kelly personal)"}, {"grok", "cli", ""}, {"claude", "plain", ""}} {
-		r := Row{Tool: v[0], Profile: v[1], Extra: map[string]any{}}
-		if v[2] != "" {
-			p := v[2]
-			r.Plan = &p
+	add := func(tool, profile, plan string, spec provider.Spec) {
+		r := Row{Tool: tool, Profile: profile, Extra: map[string]any{}}
+		if plan != "" {
+			r.Plan = &plan
 		}
-		if v[3] != "" {
-			// Static safe display label, never an email or provider identity.
-			label := v[3]
+		if spec.Label != "" {
+			// Configured safe display label, never an email or provider identity.
+			label := spec.Label
 			r.Account = &label
+		}
+		if spec.QuotaPool != "" {
+			r.Extra["quota_pool"] = spec.QuotaPool
 		}
 		rows = append(rows, r)
 	}
+	for _, v := range [][3]string{{"claude", "work", "Ultra"}, {"claude", "personal", "Ultra"}, {"codex", "work", "Team"}, {"codex", "personal", "Plus"}} {
+		add(v[0], v[1], v[2], provider.Spec{})
+	}
+	for _, spec := range reg {
+		if spec.Tool == "agy" {
+			add(spec.Tool, spec.Profile, "", spec)
+		}
+	}
+	add("grok", "cli", "", provider.Spec{})
+	add("claude", "plain", "", provider.Spec{})
 	return rows
 }
 
@@ -144,8 +160,8 @@ func sydneyReset(value *string) *string {
 	return &normalized
 }
 
-func Collect(ctx context.Context, source Source, timeout time.Duration, now time.Time) (Report, int) {
-	return CollectRows(ctx, source, timeout, now, Defaults())
+func Collect(ctx context.Context, source Source, reg provider.Registry, timeout time.Duration, now time.Time) (Report, int) {
+	return CollectRows(ctx, source, timeout, now, Rows(reg))
 }
 
 func CollectRows(ctx context.Context, source Source, timeout time.Duration, now time.Time, rows []Row) (Report, int) {
