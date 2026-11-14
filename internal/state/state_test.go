@@ -30,3 +30,22 @@ func TestCooldown(t *testing.T) {
 		t.Fatal("state permissions")
 	}
 }
+
+func TestCooldownKeysAreSyntactic(t *testing.T) {
+	dir := t.TempDir()
+	for body, ok := range map[string]bool{
+		`{"agy/removed-profile":"2026-01-01T00:00:00Z"}`: true,
+		`{"codex/work":"2026-01-01T00:00:00Z"}`:          true,
+		`{"agy/":"2026-01-01T00:00:00Z"}`:                false,
+		`{"grok/cli":"2026-01-01T00:00:00Z"}`:            false,
+		`{"codex/other":"2026-01-01T00:00:00Z"}`:         false,
+	} {
+		p := filepath.Join(dir, "cooldowns.json")
+		if err := os.WriteFile(p, []byte(body), 0o600); err != nil {
+			t.Fatal(err)
+		}
+		if _, err := Load(p); (err == nil) != ok {
+			t.Fatal("cooldown key validation", body)
+		}
+	}
+}

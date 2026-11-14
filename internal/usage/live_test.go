@@ -11,6 +11,8 @@ import (
 	"strings"
 	"testing"
 	"time"
+
+	"switchboard/internal/provider"
 )
 
 type readFunc func(context.Context, Operation, []string) ([]byte, error)
@@ -184,8 +186,8 @@ func TestLiveCollectionTimeoutAndPartial(t *testing.T) {
 		return nil, errors.New("private diagnostic")
 	})
 	sources := Sources{"codex": Codex{runner, "/fake", nil}, "claude": Claude{runner, "/fake", nil}, "grok": Grok{runner, nil}}
-	report, code := Collect(context.Background(), sources, 5*time.Millisecond, time.Now())
-	if code != 0 || len(report.Accounts) != 8 || report.SchemaVersion != 1 {
+	report, code := Collect(context.Background(), sources, provider.NewRegistry(nil), 5*time.Millisecond, time.Now())
+	if code != 0 || len(report.Accounts) != 7 || report.SchemaVersion != 1 {
 		t.Fatal("partial success contract")
 	}
 	for _, i := range []int{2, 3} {
@@ -225,8 +227,8 @@ func TestClaudeSignedOutTransport(t *testing.T) {
 			t.Fatal(err)
 		}
 		source := Sources{"claude": Claude{Commands{}, dir, []string{"PATH=" + dir}}}
-		report, code := Collect(context.Background(), source, time.Second, time.Now())
-		row := report.Accounts[7]
+		report, code := Collect(context.Background(), source, provider.NewRegistry(nil), time.Second, time.Now())
+		row := report.Accounts[6]
 		if tc.ok {
 			if code != 0 || row.LoginOK == nil || *row.LoginOK || row.Source == nil || row.Error == nil || *row.Error != "login-only source; quota not reported" {
 				t.Fatal("signed-out plain login must be a successful source read")
@@ -254,7 +256,7 @@ func TestCodexExtraResetSydneyDST(t *testing.T) {
 		reset, _ := time.Parse(time.RFC3339, tc.utc)
 		payload, _ := json.Marshal(map[string]any{"rateLimits": map[string]any{"primary": map[string]any{"usedPercent": 7, "windowDurationMins": 60, "resetsAt": reset.Unix()}}})
 		runner := readFunc(func(context.Context, Operation, []string) ([]byte, error) { return payload, nil })
-		report, code := Collect(context.Background(), Sources{"codex": Codex{runner, "/fake", nil}}, time.Second, time.Now())
+		report, code := Collect(context.Background(), Sources{"codex": Codex{runner, "/fake", nil}}, provider.NewRegistry(nil), time.Second, time.Now())
 		bucket := report.Accounts[2].Extra["60_minute"].(map[string]any)
 		if code != 0 || bucket["resets_at"] != tc.want {
 			t.Fatal("extra reset DST conversion", bucket)

@@ -29,13 +29,9 @@ func Load(path string) (State, error) {
 		return nil, errors.New("cannot read cooldown state")
 	}
 	for k := range s {
-		valid := false
-		for _, a := range provider.Accounts() {
-			if k == a.ID() {
-				valid = true
-			}
-		}
-		if !valid {
+		// Syntactic check: a cooldown for an agy account later removed from
+		// config must not invalidate the whole state file.
+		if a, ok := provider.ParseID(k); !ok || a.ID() != k {
 			return nil, errors.New("invalid cooldown state")
 		}
 	}

@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"reflect"
 	"testing"
 )
 
@@ -171,5 +172,107 @@ func TestLogConfig(t *testing.T) {
 		if tc.body == "" && (!c.Log.Enabled || c.Log.MaxBytes != 5242880 || c.Log.RedactTask) {
 			t.Fatal("log defaults")
 		}
+	}
+}
+
+func load(t *testing.T, body string) (Config, error) {
+	t.Helper()
+	path := filepath.Join(t.TempDir(), "config.toml")
+	if err := os.WriteFile(path, []byte(body), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	return Load(path, "", "")
+}
+
+const twoAgy = `
+[[tool_accounts]]
+id = "agy/work"
+label = "Antigravity (work)"
+
+[[tool_accounts]]
+id = "agy/second"
+label = "Antigravity (second)"
+home = "/path/to/agy-second-profile"
+quota_pool = "shared-pool-id"
+`
+
+func TestAgyAccounts(t *testing.T) {
+	// No tool_accounts: implicit agy/personal.
+	c, err := Load(filepath.Join(t.TempDir(), "missing.toml"), "", "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, v := range []string{"agy/personal", "codex/work", "claude/personal"} {
+		if a, e := c.ParseAccount(v); e != nil || a.ID() != v {
+			t.Fatal("default account rejected", v)
+		}
+	}
+	for _, v := range []string{"agy/work", "agy/gemini", "agy", "grok/cli"} {
+		if _, e := c.ParseAccount(v); e == nil {
+			t.Fatal("invalid account accepted", v)
+		}
+	}
+	for _, v := range []string{"agy", "agy/personal"} {
+		if f, e := c.Family(v); e != nil || f != "agy" {
+			t.Fatal("agy family rejected", v)
+		}
+	}
+	if _, e := c.Family("grok"); e == nil {
+		t.Fatal("grok must stay non-launchable")
+	}
+	order, _ := c.Order("fake task")
+	if !reflect.DeepEqual(order, []string{"codex", "claude", "agy"}) || !reflect.DeepEqual(Fallback(order), []string{"codex", "claude"}) || !reflect.DeepEqual(Fallback([]string{"agy", "claude", "codex"}), []string{"agy", "claude", "codex"}) {
+		t.Fatal("agy order/fallback", order)
+	}
+
+	// Configured accounts replace the implicit default; pins and rules use them.
+	c, err = load(t, twoAgy+"\npin = \"agy/second\"\n")
+	if err == nil {
+		t.Fatal("top-level key after array table must not parse as pin")
+	}
+	c, err = load(t, "pin = \"agy/second\"\ndefault = \"agy/work\"\n"+twoAgy)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(c.Registry) != 6 || c.Registry[4].ID() != "agy/work" || c.Registry[4].Home != "" || c.Registry[5].Label != "Antigravity (second)" || c.Registry[5].Home != "/path/to/agy-second-profile" || c.Registry[5].QuotaPool != "shared-pool-id" {
+		t.Fatal("configured registry", c.Registry)
+	}
+	if _, e := c.ParseAccount("agy/personal"); e == nil {
+		t.Fatal("implicit default must disappear once accounts are configured")
+	}
+	if c.Pin != "agy/second" || c.Default != "agy/work" {
+		t.Fatal("configured pin/default")
+	}
+	if _, err = load(t, "pin = \"agy/personal\"\n"+twoAgy); err == nil {
+		t.Fatal("pin outside configured accounts accepted")
+	}
+}
+
+func TestToolAccountsInvalid(t *testing.T) {
+	for name, body := range map[string]string{
+		"bad id":           "[[tool_accounts]]\nid = \"agy\"\nlabel = \"A\"\n",
+		"empty profile":    "[[tool_accounts]]\nid = \"agy/\"\nlabel = \"A\"\n",
+		"empty id":         "[[tool_accounts]]\nlabel = \"A\"\n",
+		"bad profile":      "[[tool_accounts]]\nid = \"agy/-x\"\nlabel = \"A\"\n",
+		"non agy":          "[[tool_accounts]]\nid = \"codex/work\"\nlabel = \"A\"\n",
+		"other tool":       "[[tool_accounts]]\nid = \"claude/third\"\nlabel = \"A\"\n",
+		"missing label":    "[[tool_accounts]]\nid = \"agy/work\"\n",
+		"blank label":      "[[tool_accounts]]\nid = \"agy/work\"\nlabel = \"  \"\n",
+		"email label":      "[[tool_accounts]]\nid = \"agy/work\"\nlabel = \"someone@example.com\"\n",
+		"duplicate id":     "[[tool_accounts]]\nid = \"agy/work\"\nlabel = \"A\"\n[[tool_accounts]]\nid = \"agy/work\"\nlabel = \"B\"\n",
+		"unknown field":    "[[tool_accounts]]\nid = \"agy/work\"\nlabel = \"A\"\nemail = \"x\"\n",
+		"relative home":    "[[tool_accounts]]\nid = \"agy/work\"\nlabel = \"A\"\nhome = \"profiles/work\"\n",
+		"bad pool":         "[[tool_accounts]]\nid = \"agy/work\"\nlabel = \"A\"\nquota_pool = \"a b\"\n",
+		"not array":        "[tool_accounts]\nid = \"agy/work\"\nlabel = \"A\"\n",
+		"criteria clash":   "[accounts.agy]\nid = \"agy/work\"\n",
+		"wrong value type": "[[tool_accounts]]\nid = 3\nlabel = \"A\"\n",
+	} {
+		if _, err := load(t, body); err == nil {
+			t.Fatal("invalid tool_accounts accepted:", name)
+		}
+	}
+	c, err := load(t, "[[tool_accounts]]\nid = \"agy/work\"\nlabel = \"A\"\nhome = \"~/profiles/work\"\nquota_pool = \"\"\n")
+	if err != nil || c.Registry[4].Home != "~/profiles/work" || c.Registry[4].QuotaPool != "" {
+		t.Fatal("tilde home and empty pool must be accepted", err)
 	}
 }

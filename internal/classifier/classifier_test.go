@@ -86,7 +86,7 @@ func TestJevWireAndFallback(t *testing.T) {
 						confidence = 0.2
 					}
 					if mode == "ineligible" {
-						choice = "agy"
+						choice = "grok"
 					}
 					probs := map[string]float64{"codex": .8, "claude": .2}
 					if mode == "missing-probabilities" {

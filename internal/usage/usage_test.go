@@ -9,6 +9,8 @@ import (
 	"strings"
 	"testing"
 	"time"
+
+	"switchboard/internal/provider"
 )
 
 type fakeSource struct{ mode int }
@@ -25,11 +27,11 @@ func (f fakeSource) Read(ctx context.Context, tool, profile string) (Data, error
 	return Data{}, errors.New("private diagnostic must never escape")
 }
 
-func TestEightRowsAndFailures(t *testing.T) {
+func TestDefaultRowsAndFailures(t *testing.T) {
 	now := time.Date(2026, 11, 11, 1, 0, 0, 0, time.UTC)
 	for _, mode := range []int{0, 1, 2} {
-		r, code := Collect(context.Background(), fakeSource{mode}, time.Millisecond, now)
-		if len(r.Accounts) != 8 {
+		r, code := Collect(context.Background(), fakeSource{mode}, provider.NewRegistry(nil), time.Millisecond, now)
+		if len(r.Accounts) != 7 {
 			t.Fatal("row count")
 		}
 		if (mode == 1) != (code == 0) {
@@ -88,7 +90,7 @@ func TestSnapshotSydneyTimestamps(t *testing.T) {
 			t.Fatal(err)
 		}
 		now, _ := time.Parse(time.RFC3339, tc.utc)
-		report, code := Collect(context.Background(), Snapshot{dir}, time.Second, now)
+		report, code := Collect(context.Background(), Snapshot{dir}, provider.NewRegistry(nil), time.Second, now)
 		row := report.Accounts[2]
 		if code != 0 || report.CheckedAt != tc.want || row.Extra["observed_at"] != tc.want || *row.WeeklyResetsAt != tc.want || *row.FiveHourResetsAt != tc.want {
 			t.Fatal("snapshot timestamps must use Sydney's actual offset")

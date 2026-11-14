@@ -15,27 +15,33 @@ import (
 
 func (a *App) launchFamily(c CLI, family string, accountFlag bool) int {
 	argv := c.Claude.Args
-	if family == "codex" {
+	switch family {
+	case "codex":
 		argv = c.Codex.Args
+	case "agy":
+		argv = c.Agy.Args
 	}
+	conf, err := a.loadConfig(c)
+	if err != nil {
+		return a.fail(2, err.Error())
+	}
+	reg := conf.Registry
 	pin := ""
-	if len(argv) > 0 && (argv[0] == "work" || argv[0] == "personal") {
-		pin = family + "/" + argv[0]
-		argv = argv[1:]
+	if len(argv) > 0 {
+		if _, ok := reg.Lookup(provider.Account{Tool: family, Profile: argv[0]}); ok {
+			pin = family + "/" + argv[0]
+			argv = argv[1:]
+		}
 	}
 	if len(argv) > 0 && argv[0] == "--" {
 		argv = argv[1:]
 	}
 	if accountFlag {
-		account, err := config.ParseAccount(c.Account)
+		account, err := reg.Parse(c.Account)
 		if err != nil || account.Tool != family {
-			return a.fail(2, "--account must name a valid account in the selected family")
+			return a.fail(2, "--account must name a configured account in the selected family")
 		}
 		pin = account.ID()
-	}
-	conf, err := a.loadConfig(c)
-	if err != nil {
-		return a.fail(2, err.Error())
 	}
 	// Environment and TOML pins apply only to task routing.
 	conf.Pin = pin
@@ -48,7 +54,7 @@ func (a *App) launchFamily(c CLI, family string, accountFlag bool) int {
 	pick := provider.Account{}
 	reason := "pinned account; usage selection bypassed"
 	if pin != "" {
-		pick, _ = config.ParseAccount(pin)
+		pick, _ = reg.Parse(pin)
 	} else {
 		statePath := state.Path(a.Home, a.value("XDG_STATE_HOME"))
 		s, err := state.Load(statePath)
@@ -57,13 +63,14 @@ func (a *App) launchFamily(c CLI, family string, accountFlag bool) int {
 		}
 		ctx, now := context.Background(), time.Now()
 		statuses := []provider.Status{}
-		for _, st := range a.statuses(ctx) {
-			if st.Tool == family {
+		for _, st := range a.statuses(ctx, reg) {
+			// Only shared-pool representatives are eligible without a pin.
+			if st.Tool == family && reg.Auto(st.Account) {
 				statuses = append(statuses, st)
 			}
 		}
 		rows := a.selectionUsage(ctx, c, conf, statuses, s, statePath, now)
-		pick, reason, _ = picker.Pick([]string{family}, statuses, s, rows, conf.UsageExhaustedPct, conf.HarvestMinHeadroomPct, conf.HarvestWindowHours, now)
+		pick, reason, _ = picker.Pick(reg, []string{family}, statuses, s, rows, conf.UsageExhaustedPct, conf.HarvestMinHeadroomPct, conf.HarvestWindowHours, now)
 		if !pick.Valid() {
 			return a.fail(3, "no eligible signed-in account; check sb status and local cooldowns")
 		}
@@ -80,7 +87,7 @@ func (a *App) launchFamily(c CLI, family string, accountFlag bool) int {
 	if c.DryRun {
 		return a.emit(c, result, []string{pick.ID() + "\t" + reason})
 	}
-	if err := provider.Launch(pick, argv, a.Home, a.Env, false, a.Execute); err != nil {
+	if err := provider.Launch(reg.Spec(pick), argv, a.Home, a.Env, false, a.Execute); err != nil {
 		return a.fail(1, err.Error())
 	}
 	return 0
@@ -88,7 +95,7 @@ func (a *App) launchFamily(c CLI, family string, accountFlag bool) int {
 
 func (a *App) selectionUsage(ctx context.Context, c CLI, conf config.Config, statuses []provider.Status, s state.State, statePath string, now time.Time) []usage.Row {
 	needed := []usage.Row{}
-	for _, r := range usage.Defaults() {
+	for _, r := range usage.Rows(conf.Registry) {
 		for _, st := range statuses {
 			if st.Tool == r.Tool && st.Profile == r.Profile && st.LoginOK != nil && *st.LoginOK && s.Eligible(st.Account, now) {
 				needed = append(needed, r)
@@ -97,7 +104,7 @@ func (a *App) selectionUsage(ctx context.Context, c CLI, conf config.Config, sta
 	}
 	src := a.UsageSource
 	if src == nil {
-		src = usage.Live(a.Home, a.Env)
+		src = usage.Live(a.Home, a.Env, conf.Registry)
 	}
 	ttl, _ := time.ParseDuration(conf.UsageCacheTTL)
 	return picker.Cached(ctx, src, filepath.Join(filepath.Dir(statePath), "usage-cache.json"), needed, ttl, 2*time.Second, now, !c.DryRun)
