@@ -6,8 +6,10 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"os"
 	"os/exec"
+	"os/signal"
 	"path/filepath"
 	"regexp"
 	"strings"
@@ -45,8 +47,8 @@ func ParseID(s string) (Account, bool) {
 	return a, ok && a.Valid()
 }
 
-// Spec is a launch account with its configuration. Label, Home and QuotaPool
-// apply to Antigravity accounts only.
+// Spec is a launch account with its configuration. Home and QuotaPool apply
+// to Antigravity; ConfigDir applies to Claude.
 type Spec struct {
 	Account
 	// Label is a safe configured display name, never an email or identity.
@@ -56,6 +58,8 @@ type Spec struct {
 	Home string
 	// QuotaPool is an opaque id; accounts sharing it share one allowance.
 	QuotaPool string
+	// ConfigDir selects an isolated Claude sign-in directory; ~/ expands at use time.
+	ConfigDir string
 }
 
 // DefaultAgy is the implicit Antigravity account when none is configured.
@@ -67,10 +71,22 @@ func DefaultAgy() Spec {
 // then configured Antigravity accounts (or the implicit default).
 type Registry []Spec
 
-func NewRegistry(agy []Spec) Registry {
+func NewRegistry(specs []Spec) Registry {
+	agy := []Spec{}
+	for _, s := range specs {
+		if s.Tool == "agy" {
+			agy = append(agy, s)
+		}
+	}
 	r := Registry{}
 	for _, a := range Accounts() {
-		r = append(r, Spec{Account: a})
+		s := Spec{Account: a}
+		for _, configured := range specs {
+			if configured.Account == a {
+				s = configured
+			}
+		}
+		r = append(r, s)
 	}
 	if len(agy) == 0 {
 		agy = []Spec{DefaultAgy()}
@@ -154,6 +170,11 @@ func AgyHome(s Spec, home string) string {
 	return s.Home
 }
 
+// ClaudeDir expands the configured Claude directory without reading its contents.
+func ClaudeDir(s Spec, home string) string {
+	return AgyHome(Spec{Home: s.ConfigDir}, home)
+}
+
 // AgyLoginMarker is the path pattern whose existence (never contents) indicates
 // a stored Antigravity sign-in for the account HOME.
 func AgyLoginMarker(accountHome string) string {
@@ -184,11 +205,18 @@ func Env(s Spec, home string, env []string) ([]string, error) {
 		if a.Profile == "personal" {
 			key = "CLAUDE_OAUTH_TOKEN_2"
 		}
-		if values[key] == "" {
-			return nil, errors.New("mapped Claude token missing; export the profile variable")
+		if s.ConfigDir != "" {
+			values["CLAUDE_CONFIG_DIR"] = ClaudeDir(s, home)
+			for _, k := range []string{"CLAUDE_CODE_OAUTH_TOKEN", "ANTHROPIC_API_KEY", "CLAUDE_OAUTH_TOKEN_1", "CLAUDE_OAUTH_TOKEN_2"} {
+				delete(values, k)
+			}
+		} else {
+			if values[key] == "" {
+				return nil, fmt.Errorf("Claude credentials missing; set config_dir for claude/%s in [[tool_accounts]] or export %s", a.Profile, key)
+			}
+			values["CLAUDE_CODE_OAUTH_TOKEN"] = values[key]
+			delete(values, "ANTHROPIC_API_KEY")
 		}
-		values["CLAUDE_CODE_OAUTH_TOKEN"] = values[key]
-		delete(values, "ANTHROPIC_API_KEY")
 	} else if a.Tool == "agy" {
 		if s.Home != "" {
 			// Mirror the isolated-profile launcher: agy derives all state from HOME/XDG.
@@ -215,38 +243,83 @@ func Env(s Spec, home string, env []string) ([]string, error) {
 	return out, nil
 }
 
-type Executor func(string, []string, []string) error
+type Runner func(string, []string, []string) (int, error)
 
-func Exec(path string, args, env []string) error {
-	return syscall.Exec(path, append([]string{path}, args...), env)
+func Run(path string, args, env []string) (int, error) {
+	c := exec.Command(path, args...)
+	c.Env, c.Stdin, c.Stdout, c.Stderr = env, os.Stdin, os.Stdout, os.Stderr
+	signals := make(chan os.Signal, 8)
+	signal.Notify(signals, syscall.SIGINT, syscall.SIGQUIT, syscall.SIGTERM, syscall.SIGHUP)
+	defer signal.Stop(signals)
+	if err := c.Start(); err != nil {
+		return 1, err
+	}
+	done := make(chan struct{})
+	stopped := make(chan struct{})
+	go func() {
+		defer close(stopped)
+		for {
+			select {
+			case sig := <-signals:
+				if sig == syscall.SIGTERM || sig == syscall.SIGHUP {
+					_ = c.Process.Signal(sig)
+				}
+			case <-done:
+				return
+			}
+		}
+	}()
+	err := c.Wait()
+	close(done)
+	<-stopped
+	if err == nil {
+		return 0, nil
+	}
+	if e, ok := err.(*exec.ExitError); ok {
+		if status, ok := e.Sys().(syscall.WaitStatus); ok && status.Signaled() {
+			return 128 + int(status.Signal()), nil
+		}
+		return e.ExitCode(), nil
+	}
+	return 1, err
 }
 
-func Launch(s Spec, args []string, home string, env []string, dry bool, execute Executor) error {
+func Launch(s Spec, args []string, home string, env []string, dry bool, run Runner) (int, error) {
 	a := s.Account
 	mapped, err := Env(s, home, env)
 	if err != nil {
-		return err
+		return 1, err
 	}
 	path, err := exec.LookPath(a.Tool)
 	if err != nil {
-		return errors.New("tool missing on PATH; install the genuine CLI")
+		return 1, errors.New("tool missing on PATH; install the genuine CLI")
 	}
 	if dry {
-		return nil
+		return 0, nil
+	}
+	if a.Tool == "claude" && s.ConfigDir != "" {
+		dir := ClaudeDir(s, home)
+		info, err := os.Stat(dir)
+		if err != nil || !info.IsDir() {
+			return 1, fmt.Errorf("Claude config_dir missing or not a directory; sign in with CLAUDE_CONFIG_DIR=%s claude", dir)
+		}
 	}
 	if a.Tool == "codex" {
 		if err = os.MkdirAll(Home(home, a.Profile), 0o700); err != nil {
-			return errors.New("cannot create Codex home")
+			return 1, errors.New("cannot create Codex home")
 		}
 	}
 	if a.Tool == "agy" && s.Home != "" {
-		// Match the profile launcher's umask 077; restored only if exec returns.
 		defer syscall.Umask(syscall.Umask(0o077))
 	}
-	if execute(path, args, mapped) != nil {
-		return errors.New("cannot exec tool")
+	if run == nil {
+		run = Run
 	}
-	return nil
+	code, err := run(path, args, mapped)
+	if err != nil {
+		return 1, errors.New("cannot start tool")
+	}
+	return code, nil
 }
 
 // TaskArgs maps a routed task to the tool's interactive initial-prompt argv.

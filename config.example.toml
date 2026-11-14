@@ -87,8 +87,15 @@ account = "codex"
 # $XDG_DATA_HOME/switchboard/decisions.jsonl (default ~/.local/share/switchboard).
 # Directory 0700, files 0600. Rotate to one .1 before exceeding max_bytes.
 # Use --no-log to suppress routing writes. Explicit feedback always writes.
-# Exec exit/duration and dry-run timing are null. Pins supply implicit labels.
+# Real launches log child exit_code and duration_ms after wait (failure: exit 1).
+# Dry-run/classify keep both null. Pins supply implicit labels.
 [log]
 enabled = true
 max_bytes = 5242880 # positive integer; a single line is never split
 redact_task = false # true: task=null, SHA-256 of raw task bytes retained
+
+# Claude can use an isolated sign-in directory instead of profile token exports.
+# [[tool_accounts]]
+# id = "claude/work"
+# label = "Claude (work)"
+# config_dir = "~/.local/share/claude-usage/work"

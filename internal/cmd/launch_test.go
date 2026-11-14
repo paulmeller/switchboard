@@ -54,9 +54,9 @@ func TestExplicitFamilySelection(t *testing.T) {
 					src.rows = nil
 				}
 				p := &fakeProbe{signed: true}
-				a := App{Home: home, Out: &out, Err: &diag, Probe: p, UsageSource: src, Classifier: forbiddenClassifier{t}, Execute: func(string, []string, []string) error {
+				a := App{Home: home, Out: &out, Err: &diag, Probe: p, UsageSource: src, Classifier: forbiddenClassifier{t}, Execute: func(string, []string, []string) (int, error) {
 					t.Fatal("dry-run launched")
-					return nil
+					return 0, nil
 				}}
 				if a.Run([]string{"--dry-run", "--json", family, "--", "exec", "argv is not task text"}) != 0 {
 					t.Fatal(diag.String())
@@ -276,7 +276,7 @@ func (unknownProbe) Status(_ context.Context, s provider.Spec) provider.Status {
 	return provider.Status{Account: s.Account}
 }
 
-func TestExplicitFamilyLaunchLogBeforeExec(t *testing.T) {
+func TestExplicitFamilyLaunchLogAfterWait(t *testing.T) {
 	bin := t.TempDir()
 	if err := os.WriteFile(filepath.Join(bin, "codex"), []byte("fake"), 0o700); err != nil {
 		t.Fatal(err)
@@ -286,24 +286,28 @@ func TestExplicitFamilyLaunchLogBeforeExec(t *testing.T) {
 		var out, diag bytes.Buffer
 		home := t.TempDir()
 		called := false
-		a := App{Home: home, Out: &out, Err: &diag, Probe: &fakeProbe{signed: true}, UsageSource: headroomSource{}, Classifier: forbiddenClassifier{t}, Execute: func(_ string, argv, _ []string) error {
+		a := App{Home: home, Out: &out, Err: &diag, Probe: &fakeProbe{signed: true}, UsageSource: headroomSource{}, Classifier: forbiddenClassifier{t}, Execute: func(_ string, argv, _ []string) (int, error) {
 			called = true
 			records, err := decision.Read(decision.Path(home, ""))
-			if err != nil || len(records) != 1 || !records[0].ExplicitFamily || records[0].DryRun || records[0].Account != "codex/personal" || records[0].ExitCode != nil || records[0].DurationMS != nil {
-				t.Fatal("decision not logged before exec")
+			if err != nil || len(records) != 0 {
+				t.Fatal("logged before child exit")
 			}
 			if !reflect.DeepEqual(argv, []string{"exec", "space arg", "--flag", "a,b"}) {
 				t.Fatal("passthrough argv changed")
 			}
-			return nil
+			return 7, nil
 		}}
 		args := []string{"--no-input", "codex"}
 		if pin {
 			args = append(args, "personal")
 		}
 		args = append(args, "--", "exec", "space arg", "--flag", "a,b")
-		if a.Run(args) != 0 || !called {
+		if a.Run(args) != 7 || !called {
 			t.Fatal("fake launch failed")
+		}
+		records, err := decision.Read(decision.Path(home, ""))
+		if err != nil || len(records) != 1 || !records[0].ExplicitFamily || records[0].ExitCode == nil || *records[0].ExitCode != 7 || records[0].DurationMS == nil {
+			t.Fatal("post-exit decision")
 		}
 	}
 }

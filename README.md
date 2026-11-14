@@ -1,6 +1,6 @@
 # switchboard v0.1
 
-`sb` is a local Go CLI that execs genuine coding tools. It stores no credentials,
+`sb` is a local Go CLI that launches genuine coding tools. It stores no credentials,
 proxies no traffic, and never equates a login with available credits. Linux and
 macOS are supported. Build locally with `make ci`; cross-build with `make darwin`.
 Go 1.27.3, Kong, TOML and formatter versions are pinned in go.mod and Makefile.
@@ -37,8 +37,11 @@ No eligible account in the named family exits 3. The optional profile
 selector and separator `--` are removed; remaining argv is forwarded unchanged. Put sb
 flags before explicit launcher commands; everything after the separator belongs to
 the tool. Claude maps CLAUDE_OAUTH_TOKEN_1 (work) or CLAUDE_OAUTH_TOKEN_2 (personal)
-to CLAUDE_CODE_OAUTH_TOKEN and removes ANTHROPIC_API_KEY. Missing mapped tokens
-fail safely. Existing shell/Keychain exports supply these values; sb does not
+to CLAUDE_CODE_OAUTH_TOKEN and removes ANTHROPIC_API_KEY. Alternatively, Claude entries in `[[tool_accounts]]` may set `config_dir` to an
+absolute or `~/` directory. This sets CLAUDE_CONFIG_DIR and strips both profile
+tokens, CLAUDE_CODE_OAUTH_TOKEN and ANTHROPIC_API_KEY. The directory must exist
+on real launches; sign in with `CLAUDE_CONFIG_DIR=<dir> claude`. Without config_dir,
+missing mapped tokens fail safely. Existing shell/Keychain exports supply these values; sb does not
 extract them. Codex sets CODEX_HOME to ~/.codex or ~/.codex-personal, creating it
 only on an actual launch. Other environment variables are preserved.
 
@@ -214,8 +217,8 @@ See TypeSafe's [contrastive criteria cookbook](https://docs.typesafe.ai/concepts
 [probability routing](https://docs.typesafe.ai/patterns/probability-routing) and
 [confidence routing](https://docs.typesafe.ai/patterns/confidence-routing).
 
-Cooldowns are explicit local reports, not automatic 429 detection. Exec replaces
-sb, so sb cannot observe subsequent tool output or exits. State is written
+Cooldowns are explicit local reports, not automatic 429 detection. sb waits for
+the tool and returns its exit code; it does not inspect tool output. State is written
 atomically with mode 0600 under $XDG_STATE_HOME/switchboard (default
 ~/.local/state/switchboard), with a mode 0700 parent. A dry cooldown report writes
 nothing. Cooldown state contains no credential values or task text.
@@ -254,10 +257,10 @@ environment are never logged: task is empty (null when redacted), with the hash 
 empty task bytes. Failed selection attempts can have empty family/account and no
 label. Status, doctor, usage, schema and cooldown never append decisions.
 
-Exec still replaces sb. Real launches are logged **before** exec and both
-`exit_code` and `duration_ms` are null, including when launch subsequently fails.
-They are also null for dry-run/classify; no command/decision timing is measured.
-An attempted launch record is not evidence that the tool started or succeeded.
+Real launches write one decision after the child exits, recording `exit_code`
+and elapsed `duration_ms`. Signal exits use 128 + signal. Launch failures record
+exit code 1 and a safe failure reason followed by the selection reason.
+Dry-run/classify keep both fields null.
 Failed log writes produce a fixed stderr diagnostic and preserve routing's exit.
 Dry-run's intentional logging exception creates no Codex homes or cooldown/usage
 cache state; use `--no-log` for a selection without that log write.
@@ -301,9 +304,10 @@ supply login state; login never implies usable credits. No account identity is
 copied. Native CLIs handle their existing login; sb never reads credentials.
 
 Claude runs only `auth status --json`, using isolated config directories
-~/.local/share/claude-usage/{work,personal} and ~/.claude for plain. Token/API key
-overrides are removed. These logins differ from the token-mapped `sb status`
-identities. Claude quotas remain null with an explicit explanation because TUI
+from configured `config_dir`, falling back to
+~/.local/share/claude-usage/{work,personal}, and ~/.claude for plain. Token/API key
+overrides are removed. Configured directories are shared with `sb status`; default usage logins may
+differ from token-mapped status identities. Claude quotas remain null with an explicit explanation because TUI
 `/usage` is unsafe to automate.
 
 Antigravity rows are keyed by configured account (for example `agy/work`,
@@ -362,7 +366,7 @@ strings require explicit RFC3339 timezones. `extra` is always an object.
 
 JSON output is one document for reporting commands; `--plain` uses stable tab
 separators without decoration. Executed tools own their subsequent stdout/stderr;
-sb prints the actual routing decision to stderr before exec. `--no-input` is
+sb prints the actual routing decision to stderr before launch. `--no-input` is
 accepted: sb never prompts. `NO_COLOR` and `TERM=dumb` need no special treatment
 because sb emits no colors or terminal control sequences. Errors are concise,
 fixed diagnostics; raw provider output is never forwarded by status or usage.

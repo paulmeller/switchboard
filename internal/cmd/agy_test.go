@@ -158,9 +158,9 @@ func TestAgyConfiguredAccounts(t *testing.T) {
 	} {
 		var out, diag bytes.Buffer
 		p := &fakeProbe{}
-		a := App{Home: home, Env: []string{cfg}, Out: &out, Err: &diag, Probe: p, UsageSource: forbiddenUsage{t}, Classifier: forbiddenClassifier{t}, Execute: func(string, []string, []string) error {
+		a := App{Home: home, Env: []string{cfg}, Out: &out, Err: &diag, Probe: p, UsageSource: forbiddenUsage{t}, Classifier: forbiddenClassifier{t}, Execute: func(string, []string, []string) (int, error) {
 			t.Fatal("dry-run launched")
-			return nil
+			return 0, nil
 		}}
 		if code, result := dryResult(t, a, tc.args...); code != 0 || account(result) != tc.want || p.calls != 0 {
 			t.Fatal("wrong agy pin", tc.args, diag.String())
@@ -307,12 +307,12 @@ func TestAgyLaunchIsolation(t *testing.T) {
 	for _, tc := range []struct{ env, profile string }{{cfg, "second"}, {cfg, "work"}, {"SB_CONFIG=" + filepath.Join(dir, "absent.toml"), "personal"}} {
 		var out, diag bytes.Buffer
 		var gotArgs, gotEnv []string
-		a := App{Home: home, Env: []string{"HOME=" + home, "KEEP=yes", tc.env}, Out: &out, Err: &diag, Probe: &fakeProbe{}, UsageSource: forbiddenUsage{t}, Classifier: forbiddenClassifier{t}, Execute: func(path string, args, env []string) error {
+		a := App{Home: home, Env: []string{"HOME=" + home, "KEEP=yes", tc.env}, Out: &out, Err: &diag, Probe: &fakeProbe{}, UsageSource: forbiddenUsage{t}, Classifier: forbiddenClassifier{t}, Execute: func(path string, args, env []string) (int, error) {
 			if path != bin {
 				t.Fatal("not the agy binary")
 			}
 			gotArgs, gotEnv = args, env
-			return nil
+			return 0, nil
 		}}
 		if a.Run([]string{"--no-log", "agy", tc.profile, "--", "--model", "x"}) != 0 {
 			t.Fatal(diag.String())
@@ -386,9 +386,9 @@ func TestRoutedAgyTaskUsesInteractivePrompt(t *testing.T) {
 	for _, pin := range []string{"agy/work", "agy/second"} {
 		var out, diag bytes.Buffer
 		var got, env []string
-		a := App{Home: t.TempDir(), Env: []string{cfg}, Out: &out, Err: &diag, Probe: &fakeProbe{signed: true}, UsageSource: forbiddenUsage{t}, Classifier: forbiddenClassifier{t}, Execute: func(_ string, args, e []string) error {
+		a := App{Home: t.TempDir(), Env: []string{cfg}, Out: &out, Err: &diag, Probe: &fakeProbe{signed: true}, UsageSource: forbiddenUsage{t}, Classifier: forbiddenClassifier{t}, Execute: func(_ string, args, e []string) (int, error) {
 			got, env = args, e
-			return nil
+			return 0, nil
 		}}
 		if a.Run([]string{"--no-log", "--account", pin, "fake task"}) != 0 || !reflect.DeepEqual(got, []string{"--prompt-interactive", "fake task"}) {
 			t.Fatal("agy task argv", got, diag.String())

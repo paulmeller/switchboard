@@ -33,7 +33,7 @@ func TestCommands(t *testing.T) {
 	for _, args := range [][]string{{"usage", "--json"}, {"schema", "--json"}, {"status", "--json"}} {
 		var out, err bytes.Buffer
 		p := &fakeProbe{signed: true}
-		a := App{Out: &out, Err: &err, Home: t.TempDir(), UsageSource: usage.Unsupported{}, Classifier: forbiddenClassifier{t}, Probe: p, Execute: func(string, []string, []string) error { t.Fatal("unexpected launch"); return nil }}
+		a := App{Out: &out, Err: &err, Home: t.TempDir(), UsageSource: usage.Unsupported{}, Classifier: forbiddenClassifier{t}, Probe: p, Execute: func(string, []string, []string) (int, error) { t.Fatal("unexpected launch"); return 0, nil }}
 		code := a.Run(args)
 		if _, err := os.Stat(filepath.Join(a.Home, ".local", "share", "switchboard", "decisions.jsonl")); !os.IsNotExist(err) {
 			t.Fatal("report wrote decision log")
@@ -72,12 +72,12 @@ func TestLauncherArgvAndModes(t *testing.T) {
 	var out, diag bytes.Buffer
 	calls := 0
 	p := &fakeProbe{signed: true}
-	a := App{Out: &out, Err: &diag, Home: t.TempDir(), UsageSource: usage.Unsupported{}, Env: []string{"KEEP=yes"}, Probe: p, Execute: func(_ string, args, env []string) error {
+	a := App{Out: &out, Err: &diag, Home: t.TempDir(), UsageSource: usage.Unsupported{}, Env: []string{"KEEP=yes"}, Probe: p, Execute: func(_ string, args, env []string) (int, error) {
 		calls++
 		if !reflect.DeepEqual(args, []string{"--version", "a,b", "space arg", "--help"}) {
 			t.Fatal("argv changed")
 		}
-		return nil
+		return 0, nil
 	}}
 	if code := a.Run([]string{"codex", "personal", "--", "--version", "a,b", "space arg", "--help"}); code != 0 || calls != 1 || p.calls != 0 {
 		t.Fatal("explicit selection did not bypass routing")
@@ -148,7 +148,7 @@ func TestRoutingDryRunClassifier(t *testing.T) {
 		f := &fakeClassifier{}
 		a := App{
 			Out: &out, Err: &diag, Home: home, UsageSource: usage.Unsupported{}, Probe: &fakeProbe{signed: true}, Classifier: f,
-			Execute: func(string, []string, []string) error { t.Fatal("dry-run launched"); return nil },
+			Execute: func(string, []string, []string) (int, error) { t.Fatal("dry-run launched"); return 0, nil },
 		}
 		if a.Run(args) != 0 || f.calls != 1 {
 			t.Fatal("dry-run did not classify")
@@ -207,7 +207,7 @@ func TestCalibrationProbabilityAndDifficulty(t *testing.T) {
 		for _, probability := range []float64{0.55, 0.4} {
 			var out, diag bytes.Buffer
 			home := t.TempDir()
-			a := App{Out: &out, Err: &diag, Home: home, UsageSource: usage.Unsupported{}, Probe: &fakeProbe{signed: true}, Classifier: calibrationClassifier{probability}, Execute: func(string, []string, []string) error { t.Fatal("calibration launched"); return nil }}
+			a := App{Out: &out, Err: &diag, Home: home, UsageSource: usage.Unsupported{}, Probe: &fakeProbe{signed: true}, Classifier: calibrationClassifier{probability}, Execute: func(string, []string, []string) (int, error) { t.Fatal("calibration launched"); return 0, nil }}
 			if a.Run([]string{command, "--dry-run", "--json", "fake task"}) != 0 {
 				t.Fatal("calibration failed")
 			}
