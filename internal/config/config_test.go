@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"reflect"
 	"testing"
 )
 
@@ -171,5 +172,31 @@ func TestLogConfig(t *testing.T) {
 		if tc.body == "" && (!c.Log.Enabled || c.Log.MaxBytes != 5242880 || c.Log.RedactTask) {
 			t.Fatal("log defaults")
 		}
+	}
+}
+
+func TestAgyAccounts(t *testing.T) {
+	for _, v := range []string{"agy/personal", "agy/kelly"} {
+		if a, e := ParseAccount(v); e != nil || a.ID() != v {
+			t.Fatal("agy account rejected", v)
+		}
+	}
+	for _, v := range []string{"agy/work", "agy/gemini", "agy", "grok/cli"} {
+		if _, e := ParseAccount(v); e == nil {
+			t.Fatal("invalid account accepted", v)
+		}
+	}
+	for _, v := range []string{"agy", "agy/personal", "agy/kelly"} {
+		if f, e := Family(v); e != nil || f != "agy" {
+			t.Fatal("agy family rejected", v)
+		}
+	}
+	if _, e := Family("grok"); e == nil {
+		t.Fatal("grok must stay non-launchable")
+	}
+	c, _ := Load(filepath.Join(t.TempDir(), "missing.toml"), "", "")
+	order, _ := c.Order("fake task")
+	if !reflect.DeepEqual(order, []string{"codex", "claude", "agy"}) || !reflect.DeepEqual(Fallback(order), []string{"codex", "claude"}) || !reflect.DeepEqual(Fallback([]string{"agy", "claude", "codex"}), []string{"agy", "claude", "codex"}) {
+		t.Fatal("agy order/fallback", order)
 	}
 }

@@ -20,11 +20,48 @@ type Account struct {
 }
 
 func Accounts() []Account {
-	return []Account{{"claude", "work"}, {"claude", "personal"}, {"codex", "work"}, {"codex", "personal"}}
+	return []Account{{"claude", "work"}, {"claude", "personal"}, {"codex", "work"}, {"codex", "personal"}, {"agy", "personal"}, {"agy", "kelly"}}
 }
 func (a Account) ID() string { return a.Tool + "/" + a.Profile }
 func (a Account) Valid() bool {
+	if a.Tool == "agy" {
+		return a.Profile == "personal" || a.Profile == "kelly"
+	}
 	return (a.Tool == "claude" || a.Tool == "codex") && (a.Profile == "work" || a.Profile == "personal")
+}
+
+// Label is a safe static display name; it never contains an email or identity.
+func (a Account) Label() string {
+	switch a.ID() {
+	case "agy/personal":
+		return "Antigravity (personal)"
+	case "agy/kelly":
+		return "Antigravity (Kelly personal)"
+	}
+	return ""
+}
+
+// AgyKellyHomeEnv overrides Kelly's isolated Antigravity HOME (default ~/.gemini-kelly).
+const AgyKellyHomeEnv = "SB_AGY_KELLY_HOME"
+
+// AgyHome is the HOME the genuine agy binary sees for an Antigravity account.
+// Personal keeps the process HOME; Kelly uses a separate profile HOME.
+func AgyHome(profile, home string, env []string) string {
+	if profile != "kelly" {
+		return home
+	}
+	for _, v := range env {
+		if k, x, _ := strings.Cut(v, "="); k == AgyKellyHomeEnv && x != "" {
+			return x
+		}
+	}
+	return filepath.Join(home, ".gemini-kelly")
+}
+
+// AgyLoginMarker is the path pattern whose existence (never contents) indicates
+// a stored Antigravity sign-in for the account HOME.
+func AgyLoginMarker(accountHome string) string {
+	return filepath.Join(accountHome, ".gemini", "antigravity-cli", "antigravity-oauth-token")
 }
 
 func Home(home, profile string) string {
@@ -55,6 +92,22 @@ func Env(a Account, home string, env []string) ([]string, error) {
 		}
 		values["CLAUDE_CODE_OAUTH_TOKEN"] = values[key]
 		delete(values, "ANTHROPIC_API_KEY")
+	} else if a.Tool == "agy" {
+		if a.Profile == "kelly" {
+			// Mirror the isolated-profile launcher: agy derives all state from HOME/XDG.
+			profile := AgyHome(a.Profile, home, env)
+			if values["AGY_REAL_HOME"] == "" {
+				values["AGY_REAL_HOME"] = values["HOME"]
+				if values["AGY_REAL_HOME"] == "" {
+					values["AGY_REAL_HOME"] = home
+				}
+			}
+			values["HOME"] = profile
+			values["XDG_CONFIG_HOME"] = filepath.Join(profile, ".config")
+			values["XDG_DATA_HOME"] = filepath.Join(profile, ".local", "share")
+			values["XDG_CACHE_HOME"] = filepath.Join(profile, ".cache")
+			values["XDG_STATE_HOME"] = filepath.Join(profile, ".local", "state")
+		}
 	} else {
 		values["CODEX_HOME"] = Home(home, a.Profile)
 	}
@@ -88,10 +141,22 @@ func Launch(a Account, args []string, home string, env []string, dry bool, execu
 			return errors.New("cannot create Codex home")
 		}
 	}
+	if a.ID() == "agy/kelly" {
+		// Match the profile launcher's umask 077; restored only if exec returns.
+		defer syscall.Umask(syscall.Umask(0o077))
+	}
 	if execute(path, args, mapped) != nil {
 		return errors.New("cannot exec tool")
 	}
 	return nil
+}
+
+// TaskArgs maps a routed task to the tool's interactive initial-prompt argv.
+func TaskArgs(a Account, task string) []string {
+	if a.Tool == "agy" {
+		return []string{"--prompt-interactive", task}
+	}
+	return []string{task}
 }
 
 // Probe has no general command or prompt input. Implementations only receive account identities.
@@ -132,6 +197,20 @@ func (l Live) Status(ctx context.Context, a Account) Status {
 	timeout := l.Timeout
 	if timeout <= 0 {
 		timeout = 5 * time.Second
+	}
+	if a.Tool == "agy" {
+		// No prompt or subprocess: binary presence plus stored sign-in marker
+		// existence (stat only, contents never opened). Not a credit claim.
+		if _, err := exec.LookPath("agy"); err != nil {
+			return fail("tool missing on PATH; install the genuine CLI")
+		}
+		info, err := os.Stat(AgyLoginMarker(AgyHome(a.Profile, l.Home, l.Env)))
+		ok := err == nil && info.Mode().IsRegular()
+		if err != nil && !os.IsNotExist(err) {
+			return fail("sign-in marker unreadable; check the profile directory")
+		}
+		s.LoginOK = &ok
+		return s
 	}
 	ctx, cancel := context.WithTimeout(ctx, timeout)
 	defer cancel()

@@ -26,7 +26,7 @@ import (
 const Version = "0.1.0"
 
 type Launch struct {
-	Args []string `arg:"" optional:"" sep:"none" help:"Optional work/personal, then tool arguments (use --)."`
+	Args []string `arg:"" optional:"" sep:"none" help:"Optional profile (work/personal; agy: personal/kelly), then tool arguments (use --)."`
 }
 type CLI struct {
 	ClassifierProvider string   `help:"Classifier: typesafe, ai-gateway or off." env:"SB_CLASSIFIER_PROVIDER"`
@@ -42,7 +42,8 @@ type CLI struct {
 	Account            string   `help:"Hard pin tool/profile; for feedback, correct the account." env:"SB_ACCOUNT"`
 	Claude             Launch   `cmd:"" passthrough:"" help:"Balance Claude accounts and exec; optional work/personal pin."`
 	Codex              Launch   `cmd:"" passthrough:"" help:"Balance Codex accounts and exec; optional work/personal pin."`
-	Status             struct{} `cmd:"" help:"Check four login states, not credits."`
+	Agy                Launch   `cmd:"" passthrough:"" help:"Balance Antigravity accounts and exec; optional personal/kelly pin."`
+	Status             struct{} `cmd:"" help:"Check six launch account login states, not credits."`
 	Doctor             struct{} `cmd:"" help:"Check local prerequisites without changing them."`
 	Usage              struct{} `cmd:"" help:"Read safe live usage; unknown values remain null."`
 	Schema             struct{} `cmd:"" help:"Describe actual commands and output contracts."`
@@ -93,7 +94,7 @@ func (a *App) value(k string) string {
 }
 func (a *App) fail(code int, msg string) int { fmt.Fprintln(a.Err, "sb: "+msg); return code }
 func normalize(args []string) []string {
-	known := map[string]bool{"feedback": true, "tune": true, "classify": true, "run": true, "status": true, "doctor": true, "usage": true, "schema": true, "claude": true, "codex": true, "cooldown": true}
+	known := map[string]bool{"feedback": true, "tune": true, "classify": true, "run": true, "status": true, "doctor": true, "usage": true, "schema": true, "claude": true, "codex": true, "agy": true, "cooldown": true}
 	for i := 0; i < len(args); i++ {
 		v := args[i]
 		if v == "--config" || v == "--account" || v == "--classifier-provider" || v == "--classifier-base-url" || v == "--classifier-model" {
@@ -191,8 +192,8 @@ parsedVersion:
 	background := context.Background()
 	if name == "schema" {
 		return a.emit(c, map[string]any{"schema_version": 1, "commands": schemaNode(p.Model.Node), "exit_codes": map[string]int{"success": 0, "failure": 1, "invalid_input": 2, "no_eligible_account": 3}, "decision_log_contract": decisionContract(), "classification_contract": map[string]string{"id": "decision UUID when successfully logged; otherwise omitted", "family": "launchable tool family", "candidates": "normalized status, cooldown and usage account candidates", "reason": "account selection explanation", "source": "jev|rules", "probability": "chosen family probability|null", "confidence": "Choice confidence|null", "difficulty": "0..2 when independently confident|null", "difficulty_confidence": "0..1|null", "jev": "raw normalized classification when valid", "why": "safe decision explanation"}, "usage_schema_version": 1, "usage_tool": "extensible string", "usage_contract": map[string]any{
-			"schema_version": 1, "row_count": 8, "checked_at": "RFC3339 Australia/Sydney",
-			"entry_keys": map[string]string{"tool": "extensible string", "profile": "string", "account": "string|null", "plan": "configured string|null", "login_ok": "boolean|null", "weekly_used_pct": "number 0..100|null", "weekly_resets_at": "RFC3339|null", "five_hour_used_pct": "number 0..100|null", "five_hour_resets_at": "RFC3339|null", "extra": "object", "source": "string|null", "error": "safe string|null"}, "sources": "live read-only Codex RPC, Claude login, Grok usage; unsupported quotas null", "all_source_failure_exit": 1, "partial_success_exit": 0,
+			"schema_version": 1, "row_count": 8, "row_timeout": "usage 5s and routing 2s per row; agy rows use 20s in both", "checked_at": "RFC3339 Australia/Sydney",
+			"entry_keys": map[string]string{"tool": "extensible string", "profile": "string", "account": "string|null", "plan": "configured string|null", "login_ok": "boolean|null", "weekly_used_pct": "number 0..100|null", "weekly_resets_at": "RFC3339|null", "five_hour_used_pct": "number 0..100|null", "five_hour_resets_at": "RFC3339|null", "extra": "object", "source": "string|null", "error": "safe string|null"}, "sources": "live read-only Codex RPC, Claude login, Antigravity agy --output-format json --print /usage slash command, Grok usage; unsupported quotas null", "all_source_failure_exit": 1, "partial_success_exit": 0,
 		}, "precedence": []string{"flags", "environment", "config", "defaults"}}, []string{"sb schema --json"})
 	}
 	if name == "feedback" || name == "tune" {
@@ -279,7 +280,7 @@ parsedVersion:
 			}
 			add("classifier key present", present, fix)
 		}
-		for _, tool := range []string{"claude", "codex"} {
+		for _, tool := range []string{"claude", "codex", "agy"} {
 			_, e := exec.LookPath(tool)
 			add(tool+" binary", e == nil, "Install genuine CLI and add it to PATH")
 		}
@@ -295,12 +296,16 @@ parsedVersion:
 			info, e := os.Stat(provider.Home(a.Home, profile))
 			add("codex "+profile+" directory", e == nil && info.IsDir(), "Explicit sb codex launch creates the directory")
 		}
+		for _, profile := range []string{"personal", "kelly"} {
+			info, e := os.Stat(provider.AgyHome(profile, a.Home, a.Env))
+			add("agy "+profile+" home directory", e == nil && info.IsDir(), "Sign in with the genuine agy CLI using that account's HOME")
+		}
 		if e := a.emit(c, map[string]any{"checks": checks}, lines); e != 0 {
 			return e
 		}
 		return code
 	}
-	if name == "claude" || name == "codex" {
+	if name == "claude" || name == "codex" || name == "agy" {
 		explicit := false
 		for _, step := range ctx.Path {
 			if step.Flag != nil && step.Flag.Name == "account" && !step.Resolved {
@@ -360,10 +365,17 @@ parsedVersion:
 			}
 		}
 	}
+	family := ""
+	for _, f := range config.Fallback(order) {
+		for _, e := range eligible {
+			if f == e && family == "" {
+				family = f
+			}
+		}
+	}
 	if len(eligible) == 0 {
 		return a.fail(3, "no eligible signed-in account; check sb status and local cooldowns")
 	}
-	family := eligible[0]
 	reason := ""
 	pick := provider.Account{}
 	source, why := "rules", "rules: classifier off"
@@ -397,6 +409,9 @@ parsedVersion:
 		}
 	}
 	candidates := []picker.Candidate{}
+	if conf.Pin == "" && family == "" {
+		return a.fail(3, "no eligible signed-in account; check sb status and local cooldowns")
+	}
 	if conf.Pin != "" {
 		pick, _ = config.ParseAccount(conf.Pin)
 		usable := false
@@ -416,12 +431,19 @@ parsedVersion:
 		family, source, why, reason = pick.Tool, "rules", "explicit account pin", "pinned account; usage selection bypassed"
 	} else {
 		familyOrder := []string{family}
-		for _, f := range order {
+		for _, f := range config.Fallback(order) {
 			if f != family {
 				familyOrder = append(familyOrder, f)
 			}
 		}
-		rows := a.selectionUsage(background, c, conf, statuses, s, statePath, now)
+		// Antigravity /usage is slow; fetch it only when Antigravity is selected.
+		needed := []provider.Status{}
+		for _, st := range statuses {
+			if st.Tool != "agy" || family == "agy" {
+				needed = append(needed, st)
+			}
+		}
+		rows := a.selectionUsage(background, c, conf, needed, s, statePath, now)
 		pick, reason, candidates = picker.Pick(familyOrder, statuses, s, rows, conf.UsageExhaustedPct, conf.HarvestMinHeadroomPct, conf.HarvestWindowHours, now)
 		if !pick.Valid() {
 			return a.fail(3, "no eligible signed-in account; check sb status and local cooldowns")
@@ -480,7 +502,7 @@ parsedVersion:
 		return a.emit(c, result, lines)
 	}
 	fmt.Fprintln(a.Err, "sb: "+line)
-	if e := provider.Launch(pick, []string{c.Run.Task}, a.Home, a.Env, false, a.Execute); e != nil {
+	if e := provider.Launch(pick, provider.TaskArgs(pick, c.Run.Task), a.Home, a.Env, false, a.Execute); e != nil {
 		return a.fail(1, e.Error())
 	}
 	return 0

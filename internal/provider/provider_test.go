@@ -33,6 +33,10 @@ func TestMapping(t *testing.T) {
 			if lookup(env, "ANTHROPIC_API_KEY") != "" || lookup(env, "CLAUDE_CODE_OAUTH_TOKEN") != "fixture-"+a.Profile {
 				t.Fatal("incorrect token mapping")
 			}
+		} else if a.Tool == "agy" {
+			if lookup(env, "CODEX_HOME") != "" || lookup(env, "CLAUDE_CODE_OAUTH_TOKEN") != "" {
+				t.Fatal("agy received another tool mapping")
+			}
 		} else if lookup(env, "CODEX_HOME") != Home("/example", a.Profile) {
 			t.Fatal("incorrect home")
 		}
@@ -99,5 +103,58 @@ func TestStatusTimeoutAndClaude(t *testing.T) {
 	s = (Live{Home: t.TempDir(), Env: []string{"CLAUDE_OAUTH_TOKEN_1=fixture-work"}}).Status(context.Background(), Account{"claude", "work"})
 	if s.LoginOK == nil || !*s.LoginOK || s.Error != nil {
 		t.Fatal("Claude status normalization")
+	}
+}
+
+func TestAgyAccountsAndEnv(t *testing.T) {
+	if len(Accounts()) != 6 || !(Account{"agy", "personal"}).Valid() || !(Account{"agy", "kelly"}).Valid() || (Account{"agy", "work"}).Valid() || (Account{"agy", "gemini"}).Valid() || (Account{"codex", "kelly"}).Valid() {
+		t.Fatal("agy account registry")
+	}
+	if (Account{"agy", "kelly"}).Label() != "Antigravity (Kelly personal)" {
+		t.Fatal("kelly label")
+	}
+	home := t.TempDir()
+	env, err := Env(Account{"agy", "kelly"}, home, []string{"HOME=" + home, "XDG_CONFIG_HOME=/elsewhere", "KEEP=yes"})
+	profile := filepath.Join(home, ".gemini-kelly")
+	if err != nil || lookup(env, "HOME") != profile || lookup(env, "AGY_REAL_HOME") != home || lookup(env, "KEEP") != "yes" ||
+		lookup(env, "XDG_CONFIG_HOME") != filepath.Join(profile, ".config") || lookup(env, "XDG_DATA_HOME") != filepath.Join(profile, ".local", "share") ||
+		lookup(env, "XDG_CACHE_HOME") != filepath.Join(profile, ".cache") || lookup(env, "XDG_STATE_HOME") != filepath.Join(profile, ".local", "state") {
+		t.Fatal("kelly isolation", err)
+	}
+	override := filepath.Join(home, "other")
+	env, _ = Env(Account{"agy", "kelly"}, home, []string{"HOME=" + home, "AGY_REAL_HOME=/kept", AgyKellyHomeEnv + "=" + override})
+	if lookup(env, "HOME") != override || lookup(env, "AGY_REAL_HOME") != "/kept" {
+		t.Fatal("kelly override")
+	}
+	env, _ = Env(Account{"agy", "personal"}, home, []string{"HOME=" + home, "XDG_CONFIG_HOME=/mine"})
+	if lookup(env, "HOME") != home || lookup(env, "XDG_CONFIG_HOME") != "/mine" || lookup(env, "AGY_REAL_HOME") != "" {
+		t.Fatal("personal env rewritten")
+	}
+	if _, err := os.Stat(profile); !os.IsNotExist(err) {
+		t.Fatal("env mapping created a directory")
+	}
+}
+
+func TestAgyStatusMarkerExistenceOnly(t *testing.T) {
+	dir := t.TempDir()
+	// Any execution of the fake binary is a failure: status must not run agy.
+	os.WriteFile(filepath.Join(dir, "agy"), []byte("#!/bin/sh\ntouch \"$0.ran\"\nexit 9\n"), 0o700)
+	t.Setenv("PATH", dir)
+	home := t.TempDir()
+	marker := AgyLoginMarker(AgyHome("kelly", home, nil))
+	os.MkdirAll(filepath.Dir(marker), 0o700)
+	os.WriteFile(marker, nil, 0o000) // unreadable on purpose: only existence is checked
+	live := Live{Home: home, Env: []string{"HOME=" + home}}
+	kelly := live.Status(context.Background(), Account{"agy", "kelly"})
+	personal := live.Status(context.Background(), Account{"agy", "personal"})
+	if kelly.LoginOK == nil || !*kelly.LoginOK || kelly.Error != nil || personal.LoginOK == nil || *personal.LoginOK {
+		t.Fatal("marker existence")
+	}
+	if _, err := os.Stat(filepath.Join(dir, "agy.ran")); !os.IsNotExist(err) {
+		t.Fatal("status executed agy")
+	}
+	t.Setenv("PATH", t.TempDir())
+	if s := live.Status(context.Background(), Account{"agy", "kelly"}); s.LoginOK != nil || s.Error == nil {
+		t.Fatal("missing binary must be unknown")
 	}
 }

@@ -20,6 +20,7 @@ const (
 	CodexLimits Operation = iota
 	ClaudeLogin
 	GrokUsage
+	AgyUsage
 )
 
 type Runner interface {
@@ -37,6 +38,9 @@ func (Commands) Read(ctx context.Context, op Operation, env []string) ([]byte, e
 		name, args = "claude", []string{"auth", "status", "--json"}
 	case GrokUsage:
 		name, args = "grok", []string{"usage", "--json"}
+	case AgyUsage:
+		// Print-mode slash-command expansion of the built-in /usage; never free text.
+		name, args = "agy", []string{"--output-format", "json", "--print", "/usage"}
 	default:
 		return nil, errors.New("unsupported operation")
 	}
@@ -326,7 +330,14 @@ func (s Sources) Read(ctx context.Context, tool, profile string) (Data, error) {
 	return source.Read(ctx, tool, profile)
 }
 
+func (s Sources) Timeout(tool string) time.Duration {
+	if t, ok := s[tool].(Timed); ok {
+		return t.Timeout(tool)
+	}
+	return 0
+}
+
 func Live(home string, env []string) Sources {
 	runner := Commands{}
-	return Sources{"codex": Codex{runner, home, env}, "claude": Claude{runner, home, env}, "grok": Grok{runner, env}, "agy": Unsupported{}}
+	return Sources{"codex": Codex{runner, home, env}, "claude": Claude{runner, home, env}, "grok": Grok{runner, env}, "agy": Agy{runner, home, env}}
 }

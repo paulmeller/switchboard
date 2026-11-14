@@ -48,7 +48,7 @@ func (a *App) localReport(c CLI, name string) int {
 	if !f.OK && f.Family == "" && f.Account == "" {
 		return a.fail(2, "feedback requires --ok, --family or --account")
 	}
-	if f.Family != "" && f.Family != "claude" && f.Family != "codex" {
+	if f.Family != "" && f.Family != "claude" && f.Family != "codex" && f.Family != "agy" {
 		return a.fail(2, "invalid feedback family")
 	}
 	if f.Account != "" {
@@ -132,7 +132,7 @@ func decisionContract() map[string]any {
 		"exit_code":       "always null; sb cannot observe replacement CLI exits",
 		"duration_ms":     "always null, including dry-run/classify",
 		"launches":        "all launches, including explicit family and passthrough; unless --no-log or log.enabled=false",
-		"explicit_family": "boolean, always present; true for sb claude/codex, false for run/classify; old records default false",
+		"explicit_family": "boolean, always present; true for sb claude/codex/agy, false for run/classify; old records default false",
 		"implicit_labels": "explicit account pins only; defaults/rules never label",
 		"feedback":        map[string]any{"target": "id|last across retained decisions; ignore feedback", "requires": "--ok or explicit --family/--account; corrections must agree", "writes": "even with --no-log or log.enabled=false", "fields": []string{"schema_version", "type", "id", "ts", "decision_id", "family", "account", "ok"}},
 		"tune":            map[string]any{"sources": "retained local log only; latest label wins", "fields": []string{"schema_version", "decisions", "labelled_decisions", "jev_labelled_decisions", "too_few_labels", "families", "floors", "recommended_floor"}, "floors": []float64{.5, .6, .7, .8, .9}, "coverage": "labelled Jev with probability >= floor / all labelled Jev with probability", "accuracy": "correct / n; null when n=0", "recommendation": "highest accuracy with coverage >=0.80; ties higher floor; null if none", "minimum_labels": 30, "small_sample": "too_few_labels=true; provisional recommendation"},

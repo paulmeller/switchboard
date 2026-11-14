@@ -93,7 +93,7 @@ func ParseAccount(s string) (provider.Account, error) {
 	t, p, _ := strings.Cut(s, "/")
 	a := provider.Account{Tool: t, Profile: p}
 	if !a.Valid() {
-		return a, errors.New("account must be claude/work, claude/personal, codex/work or codex/personal")
+		return a, errors.New("account must be claude/work, claude/personal, codex/work, codex/personal, agy/personal or agy/kelly")
 	}
 	return a, nil
 }
@@ -223,8 +223,21 @@ func (c Config) Order(task string) ([]string, string) {
 	return out, reason
 }
 
+// Fallback filters a family order for automatic fallback. Antigravity is only
+// reached when it is the selected family (rule/default, Jev or explicit pin),
+// never as a silent fallback from Claude or Codex.
+func Fallback(order []string) []string {
+	out := []string{}
+	for i, f := range order {
+		if f != "agy" || i == 0 {
+			out = append(out, f)
+		}
+	}
+	return out
+}
+
 func Family(s string) (string, error) {
-	if s == "claude" || s == "codex" {
+	if s == "claude" || s == "codex" || s == "agy" {
 		return s, nil
 	}
 	a, err := ParseAccount(s)

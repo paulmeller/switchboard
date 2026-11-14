@@ -15,11 +15,14 @@ import (
 
 func (a *App) launchFamily(c CLI, family string, accountFlag bool) int {
 	argv := c.Claude.Args
-	if family == "codex" {
+	switch family {
+	case "codex":
 		argv = c.Codex.Args
+	case "agy":
+		argv = c.Agy.Args
 	}
 	pin := ""
-	if len(argv) > 0 && (argv[0] == "work" || argv[0] == "personal") {
+	if len(argv) > 0 && (provider.Account{Tool: family, Profile: argv[0]}).Valid() {
 		pin = family + "/" + argv[0]
 		argv = argv[1:]
 	}

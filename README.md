@@ -13,6 +13,8 @@ Do not install over existing launchers.
 ./build/sb --help
 ./build/sb claude work -- --version
 ./build/sb codex personal -- login status
+./build/sb agy kelly -- --help
+./build/sb --dry-run agy
 ./build/sb status --json
 ./build/sb doctor --plain
 ./build/sb --dry-run 'fix a flaky test'
@@ -26,12 +28,12 @@ Do not install over existing launchers.
 ./build/sb schema --json
 ```
 
-Explicit `claude` and `codex` commands balance signed-in accounts outside cooldown
+Explicit `claude`, `codex` and `agy` commands balance signed-in accounts outside cooldown
 within the named family using usage/reset ranking, without a classifier or family
-fallback. Only an explicit `--account tool/profile` flag or positional work/personal
-selector pins an account and bypasses status/usage/cooldown checks. The flag must
+fallback. Only an explicit `--account tool/profile` flag or positional profile
+selector (work/personal; for agy personal/kelly) pins an account and bypasses status/usage/cooldown checks. The flag must
 match the named family; `SB_ACCOUNT` and TOML `pin` apply only to task routing.
-No eligible account in the named family exits 3. The optional work/personal
+No eligible account in the named family exits 3. The optional profile
 selector and separator `--` are removed; remaining argv is forwarded unchanged. Put sb
 flags before explicit launcher commands; everything after the separator belongs to
 the tool. Claude maps CLAUDE_OAUTH_TOKEN_1 (work) or CLAUDE_OAUTH_TOKEN_2 (personal)
@@ -40,11 +42,26 @@ fail safely. Existing shell/Keychain exports supply these values; sb does not
 extract them. Codex sets CODEX_HOME to ~/.codex or ~/.codex-personal, creating it
 only on an actual launch. Other environment variables are preserved.
 
+Antigravity (`agy`) has two launch accounts, both running the genuine `agy` on PATH:
+`agy/personal` keeps the process HOME and environment unchanged; `agy/kelly`
+("Antigravity (Kelly personal)") uses an isolated profile HOME, default
+`~/.gemini-kelly`, overridable with `SB_AGY_KELLY_HOME`. For Kelly sb sets
+`HOME` to the profile, `AGY_REAL_HOME` to the original HOME (unless already set),
+`XDG_CONFIG_HOME`, `XDG_DATA_HOME`, `XDG_CACHE_HOME` and `XDG_STATE_HOME` to
+`.config`, `.local/share`, `.cache` and `.local/state` under it, and umask 077, matching
+an isolated-profile wrapper. sb never creates, reads or copies profile files.
+`sb agy` balances the two accounts; `sb agy kelly`, `sb agy personal` or
+`--account agy/kelly` pin. Routed tasks start `agy --prompt-interactive "<task>"`.
+
 `status` makes bounded genuine `claude auth status --json` and `codex login status`
-checks for the four configured launcher identities. Only recognized booleans and
+checks for the four Claude/Codex launcher identities. Antigravity status runs no
+subprocess and sends no prompt: it requires `agy` on PATH and reports signed-in when
+`<account HOME>/.gemini/antigravity-cli/antigravity-oauth-token` exists (stat only;
+contents are never opened). A present marker can still be an expired sign-in, so
+six rows are reported but none implies credits. Only recognized booleans and
 fixed diagnostics reach output. Unrecognized responses remain unknown. No live
-account checks were used by the test suite. `doctor` checks executable presence,
-exported variable presence, Codex directories, and on macOS Keychain service
+account checks were used by the test suite. `doctor` checks executable presence (claude, codex, agy),
+exported variable presence, Codex directories, Antigravity account HOME directories, and on macOS Keychain service
 presence using `security find-generic-password -s` without password flags. All
 Keychain output is discarded. It does not install software, sign in, or repair anything.
 
@@ -53,8 +70,10 @@ first case-insensitive substring match, then `default` (built-in `codex/work`).
 Both `default = "codex"` and legacy `default = "codex/work"` are valid; profiles
 in defaults and rules are ignored. Remaining families follow stable Claude, Codex
 order. Only positively signed-in accounts outside local cooldown enter selection.
-Jev sees unique available launchable families, never profiles; AGY/Grok are not
-launch targets. Status login is eligibility, not a claim of usable credits.
+Jev sees unique available launchable families (claude, codex, agy), never profiles;
+Grok is not a launch target. Antigravity is used only when it is the selected
+family (a rule/default naming `agy`, a Jev choice, or a pin); it is never an
+automatic fallback when Claude/Codex are unavailable. Status login is eligibility, not a claim of usable credits.
 
 Within a family, binding used is the maximum known weekly/five-hour percentage;
 headroom is 100 minus binding used. The binding window has the higher usage;
@@ -71,7 +90,7 @@ and >= 0; zero disables harvesting). Prefer the soonest binding reset among thes
 accounts; otherwise prefer the most headroom. Under-cap accounts below the minimum
 still rank above unknown usage. Exhausted accounts with remaining quota prefer
 most headroom. Fully used accounts prefer the soonest known binding reset, with
-missing resets last. Ties prefer work before personal. Task routing falls back to
+missing resets last. Ties prefer work before personal (Antigravity: personal before kelly). Task routing falls back to
 another family only when none is signed in outside cooldown; none anywhere exits 3.
 Unknown stays unknown and never fails a pick solely for missing usage.
 
@@ -87,8 +106,10 @@ Unknown TOML keys fail. `account_floor` and `difficulty_floor` are finite 0..1,
 default 0.5; legacy `confidence` maps as described below.
 
 Routing reuses the read-only usage collectors for eligible launch profiles only,
-with a two-second timeout per row (up to eight seconds for four eligible rows).
-`sb usage` remains independent, eight rows, five seconds per row, without Jev.
+with a two-second timeout per row; Antigravity rows use 20 seconds and are fetched
+only when Antigravity is the selected family (so an unpinned `sb agy` can wait up
+to 40 seconds on a cold cache). `sb usage` remains independent, eight rows, five
+seconds per row (Antigravity 20 seconds), without Jev.
 Normalized numeric windows/reset times are cached in
 $XDG_STATE_HOME/switchboard/usage-cache.json (default
 ~/.local/state/switchboard/usage-cache.json), mode 0600, parent 0700, atomic writes.
@@ -133,8 +154,8 @@ Choice uses contrastive family objects (`what`, `not_for`, `examples`). Codex
 covers implementation, tests, refactors and everyday coding; Claude covers design,
 architecture, writing and harder reasoning. Override fields with `[accounts.codex]`
 or `[accounts.claude]`; provided fields replace individual built-in fields.
-Unknown family IDs are accepted but have no effect until launchable. AGY/Grok
-criteria are placeholders only. Empty merged `what` and unknown fields fail.
+Unknown family IDs are accepted but have no effect until launchable. AGY criteria
+cover tasks that explicitly ask for Antigravity/Gemini; Grok criteria are a placeholder. Empty merged `what` and unknown fields fail.
 
 Score levels describe small local changes, scoped features/bugs/refactors, and
 open-ended architecture or cross-system high-risk changes, each with examples.
@@ -168,7 +189,7 @@ nothing. Cooldown state contains no credential values or task text.
 
 ## Local decision log and calibration
 
-Routed tasks, explicit `sb claude`/`sb codex` launches (including passthrough
+Routed tasks, explicit `sb claude`/`sb codex`/`sb agy` launches (including passthrough
 arguments), all dry-runs and `sb classify`
 append version 1 JSONL to `$XDG_DATA_HOME/switchboard/decisions.jsonl`, default
 `~/.local/share/switchboard/decisions.jsonl`. The switchboard directory is 0700;
@@ -210,7 +231,7 @@ cache state; use `--no-log` for a selection without that log write.
 `sb feedback <id|last> --ok` appends a feedback record accepting the stored family
 and account. `last` ignores feedback records. Use `--family claude` or
 `--account codex/personal` to correct a decision; an account correction also labels
-its family. Families must be claude/codex; accounts must be valid launch accounts.
+its family. Families must be claude/codex/agy; accounts must be valid launch accounts.
 `SB_ACCOUNT` alone is not a feedback correction. Corrections must agree with each other; `--ok` cannot conflict with a correction.
 Missing/unknown IDs, empty logs and missing labels exit 2. Explicit feedback still
 writes with `--no-log` or logging disabled, provided the target decision exists.
@@ -236,7 +257,7 @@ use representative corrections before changing `account_floor` manually.
 
 ## Usage contract and safety
 
-Usage uses independent adapters with a five-second timeout per row. Codex work
+Usage uses independent adapters with a five-second timeout per row (Antigravity 20s). Codex work
 and personal use the official `codex -s read-only app-server` newline JSON-RPC
 protocol: `initialize`, `initialized`, `account/rateLimits/read` with null params.
 No thread or turn is created. Primary/secondary slots map by `windowDurationMins`:
@@ -249,8 +270,22 @@ Claude runs only `auth status --json`, using isolated config directories
 ~/.local/share/claude-usage/{work,personal} and ~/.claude for plain. Token/API key
 overrides are removed. These logins differ from the token-mapped `sb status`
 identities. Claude quotas remain null with an explicit explanation because TUI
-`/usage` is unsafe to automate. AGY pool rows remain null: `--print /usage` has
-not been independently verified as a non-inference operation.
+`/usage` is unsafe to automate.
+
+Antigravity rows are keyed by account (`agy/personal`, `agy/kelly`) so routing can
+use them; account values are static labels, never emails, and plans stay null. Each
+row runs only `agy --output-format json --print /usage` under that account's
+environment (Kelly's isolated HOME/XDG). Print mode expands built-in slash commands
+(`--disable-slash-commands` exists to turn that off; agy logs "running slash
+command /usage"), so this is the built-in usage command, not a model prompt; no
+other text is ever sent and `/credits` is not called. The last column-zero JSON
+object in stdout is parsed (leading log lines are ignored); stderr is discarded.
+The "Gemini Models" group, else the first group with `5h`/`weekly` buckets, supplies
+`five_hour_*`/`weekly_*` with `used_pct = (1 - remaining_fraction) * 100` clamped
+0..100 and resets in Australia/Sydney. Other groups and windows (Claude/GPT and any
+other pools) appear under `extra.pools` with `extra.primary_pool` naming the primary.
+A successful parse sets `login_ok` true. Failure, timeout, non-success status or
+no groups leave all values null with a fixed error. Windows the payload omits stay null.
 
 Grok invokes only `grok usage --json` without session/turn arguments. Failure,
 non-JSON, or an unverified output schema yields sanitized errors and null quotas;
@@ -283,7 +318,8 @@ Stable version 1 shape (all entry keys are always present):
 ```
 
 Actual reports contain exactly eight built-in rows: Claude work/personal (Ultra),
-Codex work (Team) and personal (Plus), AGY Gemini and Claude/GPT pools, Grok CLI,
+Codex work (Team) and personal (Plus), Antigravity personal and Kelly personal
+(account rows replacing the former Gemini and Claude/GPT pool rows), Grok CLI,
 and plain Claude. `tool` is an extensible string, not a closed enum; consumers may
 append tools such as grokbot. `checked_at` uses Australia/Sydney with the actual
 offset; timezone data is embedded. Percentages are numbers 0..100 or null. Reset
