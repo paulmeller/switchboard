@@ -55,22 +55,22 @@ func TestLaunch(t *testing.T) {
 	t.Setenv("PATH", dir)
 	home := t.TempDir()
 	called := false
-	executor := func(path string, args, env []string) error {
+	executor := func(path string, args, env []string) (int, error) {
 		called = true
 		if path != bin || !reflect.DeepEqual(args, []string{"--version", "a b", "--x"}) || lookup(env, "CODEX_HOME") != Home(home, "personal") {
 			t.Fatal("exec parity")
 		}
-		return nil
+		return 0, nil
 	}
 	a := Spec{Account: Account{"codex", "personal"}}
 	args := []string{"--version", "a b", "--x"}
-	if Launch(a, args, home, nil, true, executor) != nil || called {
+	if _, err := Launch(a, args, home, nil, true, executor); err != nil || called {
 		t.Fatal("dry run executed")
 	}
 	if _, e := os.Stat(Home(home, "personal")); !os.IsNotExist(e) {
 		t.Fatal("dry run created home")
 	}
-	if e := Launch(a, args, home, nil, false, executor); e != nil || !called {
+	if _, e := Launch(a, args, home, nil, false, executor); e != nil || !called {
 		t.Fatal("launch failed")
 	}
 }
@@ -203,5 +203,58 @@ func TestAgyStatusMarkerExistenceOnly(t *testing.T) {
 	t.Setenv("PATH", t.TempDir())
 	if s := live.Status(context.Background(), second); s.LoginOK != nil || s.Error == nil {
 		t.Fatal("missing binary must be unknown")
+	}
+}
+
+func TestClaudeConfigEnvAndStatus(t *testing.T) {
+	home := t.TempDir()
+	spec := Spec{Account: Account{"claude", "work"}, ConfigDir: "~/profile"}
+	env, err := Env(spec, home, []string{"KEEP=yes", "CLAUDE_CODE_OAUTH_TOKEN=fixture", "ANTHROPIC_API_KEY=fixture", "CLAUDE_OAUTH_TOKEN_1=fixture", "CLAUDE_OAUTH_TOKEN_2=fixture"})
+	if err != nil || lookup(env, "CLAUDE_CONFIG_DIR") != filepath.Join(home, "profile") || lookup(env, "KEEP") != "yes" {
+		t.Fatal("config environment mapping")
+	}
+	for _, key := range []string{"CLAUDE_CODE_OAUTH_TOKEN", "ANTHROPIC_API_KEY", "CLAUDE_OAUTH_TOKEN_1", "CLAUDE_OAUTH_TOKEN_2"} {
+		for _, value := range env {
+			if strings.HasPrefix(value, key+"=") {
+				t.Fatal("token variable retained")
+			}
+		}
+	}
+	for _, profile := range []string{"work", "personal"} {
+		_, err := Env(Spec{Account: Account{"claude", profile}}, home, nil)
+		if err == nil || !strings.Contains(err.Error(), "set config_dir for claude/"+profile) {
+			t.Fatal("missing credential guidance")
+		}
+	}
+	bin := t.TempDir()
+	script := `#!/bin/sh
+[ "$*" = 'auth status --json' ] || exit 99
+[ "$CLAUDE_CONFIG_DIR" = "$HOME/profile" ] || exit 98
+[ "${CLAUDE_CODE_OAUTH_TOKEN+x}${ANTHROPIC_API_KEY+x}${CLAUDE_OAUTH_TOKEN_1+x}${CLAUDE_OAUTH_TOKEN_2+x}" = '' ] || exit 97
+printf '%s' '{"loggedIn":true,"ignored":"private diagnostic"}'
+`
+	if err := os.WriteFile(filepath.Join(bin, "claude"), []byte(script), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("PATH", bin)
+	status := (Live{Home: home, Env: []string{"HOME=" + home, "CLAUDE_OAUTH_TOKEN_1=fixture"}}).Status(context.Background(), spec)
+	if status.LoginOK == nil || !*status.LoginOK || status.Error != nil {
+		t.Fatal("config status failed")
+	}
+}
+
+func TestChildRunnerExit(t *testing.T) {
+	for _, tc := range []struct {
+		script string
+		code   int
+	}{{"exit 7", 7}, {"kill -TERM $$", 143}} {
+		path := filepath.Join(t.TempDir(), "fake-child")
+		if err := os.WriteFile(path, []byte("#!/bin/sh\n"+tc.script+"\n"), 0o700); err != nil {
+			t.Fatal(err)
+		}
+		code, err := Run(path, nil, nil)
+		if err != nil || code != tc.code {
+			t.Fatalf("child exit: %d, %v", code, err)
+		}
 	}
 }

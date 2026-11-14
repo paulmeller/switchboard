@@ -246,15 +246,20 @@ type window struct {
 }
 
 type Claude struct {
-	Runner Runner
-	Home   string
-	Env    []string
+	Registry provider.Registry
+	Runner   Runner
+	Home     string
+	Env      []string
 }
 
 func (s Claude) Read(ctx context.Context, _, profile string) (Data, error) {
 	dir := filepath.Join(s.Home, ".claude")
 	if profile != "plain" {
 		dir = filepath.Join(s.Home, ".local", "share", "claude-usage", profile)
+	}
+	spec := s.Registry.Spec(provider.Account{Tool: "claude", Profile: profile})
+	if spec.ConfigDir != "" {
+		dir = provider.ClaudeDir(spec, s.Home)
 	}
 	env := mappedEnv(s.Env, "CLAUDE_CONFIG_DIR", dir)
 	raw, err := s.Runner.Read(ctx, ClaudeLogin, env)
@@ -265,7 +270,7 @@ func (s Claude) Read(ctx context.Context, _, profile string) (Data, error) {
 	if err != nil {
 		return Data{}, err
 	}
-	notice := "quota unavailable; no verified noninteractive quota command"
+	notice := "quota unavailable; no safe noninteractive Claude usage source (only interactive /usage)"
 	if profile == "plain" {
 		notice = "login-only source; quota not reported"
 	}
@@ -341,5 +346,5 @@ func (s Sources) Timeout(tool string) time.Duration {
 
 func Live(home string, env []string, reg provider.Registry) Sources {
 	runner := Commands{}
-	return Sources{"codex": Codex{runner, home, env}, "claude": Claude{runner, home, env}, "grok": Grok{runner, env}, "agy": Agy{runner, home, env, reg}}
+	return Sources{"codex": Codex{runner, home, env}, "claude": Claude{Registry: reg, Runner: runner, Home: home, Env: env}, "grok": Grok{runner, env}, "agy": Agy{runner, home, env, reg}}
 }

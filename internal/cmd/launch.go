@@ -81,16 +81,13 @@ func (a *App) launchFamily(c CLI, family string, accountFlag bool) int {
 	}
 	logged = true
 	result := map[string]string{"tool": pick.Tool, "profile": pick.Profile, "reason": reason}
-	if id := a.logDecision(c, conf, d); id != "" {
-		result["id"] = id
-	}
 	if c.DryRun {
+		if id := a.logDecision(c, conf, d); id != "" {
+			result["id"] = id
+		}
 		return a.emit(c, result, []string{pick.ID() + "\t" + reason})
 	}
-	if err := provider.Launch(reg.Spec(pick), argv, a.Home, a.Env, false, a.Execute); err != nil {
-		return a.fail(1, err.Error())
-	}
-	return 0
+	return a.launchAndLog(c, conf, d, reg.Spec(pick), argv)
 }
 
 func (a *App) selectionUsage(ctx context.Context, c CLI, conf config.Config, statuses []provider.Status, s state.State, statePath string, now time.Time) []usage.Row {
@@ -108,4 +105,20 @@ func (a *App) selectionUsage(ctx context.Context, c CLI, conf config.Config, sta
 	}
 	ttl, _ := time.ParseDuration(conf.UsageCacheTTL)
 	return picker.Cached(ctx, src, filepath.Join(filepath.Dir(statePath), "usage-cache.json"), needed, ttl, 2*time.Second, now, !c.DryRun)
+}
+
+func (a *App) launchAndLog(c CLI, conf config.Config, d decision.Decision, spec provider.Spec, args []string) int {
+	start := time.Now()
+	code, err := provider.Launch(spec, args, a.Home, a.Env, false, a.Execute)
+	elapsed := time.Since(start).Milliseconds()
+	if err != nil {
+		code = 1
+		d.Reason = "launch failed: " + err.Error() + "; " + d.Reason
+	}
+	d.ExitCode, d.DurationMS = &code, &elapsed
+	a.logDecision(c, conf, d)
+	if err != nil {
+		return a.fail(1, err.Error())
+	}
+	return code
 }

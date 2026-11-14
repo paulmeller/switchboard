@@ -108,7 +108,7 @@ func TestSourceAllowlistAndIsolation(t *testing.T) {
 		return nil, errors.New("private failure")
 	})
 	for _, profile := range []string{"work", "personal", "plain"} {
-		d, e := (Claude{runner, "/fake", []string{"CLAUDE_CODE_OAUTH_TOKEN=fixture", "ANTHROPIC_API_KEY=fixture", "CLAUDE_OAUTH_TOKEN_1=fixture"}}).Read(context.Background(), "claude", profile)
+		d, e := (Claude{nil, runner, "/fake", []string{"CLAUDE_CODE_OAUTH_TOKEN=fixture", "ANTHROPIC_API_KEY=fixture", "CLAUDE_OAUTH_TOKEN_1=fixture"}}).Read(context.Background(), "claude", profile)
 		if e != nil || d.LoginOK == nil || *d.LoginOK || d.Weekly != nil || d.Notice == "" {
 			t.Fatal("Claude login only")
 		}
@@ -185,7 +185,7 @@ func TestLiveCollectionTimeoutAndPartial(t *testing.T) {
 		}
 		return nil, errors.New("private diagnostic")
 	})
-	sources := Sources{"codex": Codex{runner, "/fake", nil}, "claude": Claude{runner, "/fake", nil}, "grok": Grok{runner, nil}}
+	sources := Sources{"codex": Codex{runner, "/fake", nil}, "claude": Claude{nil, runner, "/fake", nil}, "grok": Grok{runner, nil}}
 	report, code := Collect(context.Background(), sources, provider.NewRegistry(nil), 5*time.Millisecond, time.Now())
 	if code != 0 || len(report.Accounts) != 7 || report.SchemaVersion != 1 {
 		t.Fatal("partial success contract")
@@ -226,14 +226,14 @@ func TestClaudeSignedOutTransport(t *testing.T) {
 		if err := os.WriteFile(filepath.Join(dir, "claude"), []byte(script), 0o700); err != nil {
 			t.Fatal(err)
 		}
-		source := Sources{"claude": Claude{Commands{}, dir, []string{"PATH=" + dir}}}
+		source := Sources{"claude": Claude{nil, Commands{}, dir, []string{"PATH=" + dir}}}
 		report, code := Collect(context.Background(), source, provider.NewRegistry(nil), time.Second, time.Now())
 		row := report.Accounts[6]
 		if tc.ok {
 			if code != 0 || row.LoginOK == nil || *row.LoginOK || row.Source == nil || row.Error == nil || *row.Error != "login-only source; quota not reported" {
 				t.Fatal("signed-out plain login must be a successful source read")
 			}
-			if report.Accounts[0].Error == nil || *report.Accounts[0].Error != "quota unavailable; no verified noninteractive quota command" {
+			if report.Accounts[0].Error == nil || *report.Accounts[0].Error != "quota unavailable; no safe noninteractive Claude usage source (only interactive /usage)" {
 				t.Fatal("profile quota limitation")
 			}
 		} else if code != 1 || row.LoginOK != nil || row.Source != nil {
@@ -261,5 +261,36 @@ func TestCodexExtraResetSydneyDST(t *testing.T) {
 		if code != 0 || bucket["resets_at"] != tc.want {
 			t.Fatal("extra reset DST conversion", bucket)
 		}
+	}
+}
+
+func TestClaudeConfiguredUsageEnv(t *testing.T) {
+	home := t.TempDir()
+	reg := provider.NewRegistry([]provider.Spec{{Account: provider.Account{Tool: "claude", Profile: "work"}, ConfigDir: "~/profile"}})
+	called := false
+	runner := readFunc(func(_ context.Context, op Operation, env []string) ([]byte, error) {
+		called = true
+		if op != ClaudeLogin {
+			t.Fatal("unexpected usage operation")
+		}
+		found := false
+		for _, value := range env {
+			if value == "CLAUDE_CONFIG_DIR="+filepath.Join(home, "profile") {
+				found = true
+			}
+			for _, key := range []string{"CLAUDE_CODE_OAUTH_TOKEN", "ANTHROPIC_API_KEY", "CLAUDE_OAUTH_TOKEN_1", "CLAUDE_OAUTH_TOKEN_2"} {
+				if strings.HasPrefix(value, key+"=") {
+					t.Fatal("token variable retained")
+				}
+			}
+		}
+		if !found {
+			t.Fatal("config_dir not mapped")
+		}
+		return []byte(`{"loggedIn":true,"ignored":"private diagnostic"}`), nil
+	})
+	data, err := (Claude{Registry: reg, Runner: runner, Home: home, Env: []string{"CLAUDE_OAUTH_TOKEN_1=fixture"}}).Read(context.Background(), "claude", "work")
+	if err != nil || !called || data.LoginOK == nil || !*data.LoginOK || data.Weekly != nil || data.Five != nil || data.Notice != "quota unavailable; no safe noninteractive Claude usage source (only interactive /usage)" {
+		t.Fatal("configured usage result")
 	}
 }

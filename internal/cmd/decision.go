@@ -97,7 +97,7 @@ func (a *App) localReport(c CLI, name string) int {
 	return a.emit(c, feedback, []string{"feedback\t" + target.ID + "\t" + f.Family + "\t" + f.Account})
 }
 
-// Log before exec: successful replacement never returns to sb.
+// Real launches are logged after waiting; dry-run/classify log immediately.
 func (a *App) logDecision(c CLI, conf config.Config, d decision.Decision) string {
 	if !conf.Log.Enabled || c.NoLog {
 		return ""
@@ -133,8 +133,8 @@ func decisionContract() map[string]any {
 		"id":              "UUID; included in dry-run/classify JSON on successful append",
 		"ts":              "RFC3339 numeric offset in Australia/Sydney",
 		"task":            "text or null when redacted; task_sha256 always hashes original bytes",
-		"exit_code":       "always null; sb cannot observe replacement CLI exits",
-		"duration_ms":     "always null, including dry-run/classify",
+		"exit_code":       "child exit code or 1 for launch failure; null for dry-run/classify",
+		"duration_ms":     "elapsed launch milliseconds; null for dry-run/classify",
 		"launches":        "all launches, including explicit family and passthrough; unless --no-log or log.enabled=false",
 		"explicit_family": "boolean, always present; true for sb claude/codex/agy, false for run/classify; old records default false",
 		"implicit_labels": "explicit account pins only; defaults/rules never label",

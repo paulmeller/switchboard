@@ -159,19 +159,19 @@ func TestRealLaunchLog(t *testing.T) {
 		var out, diag bytes.Buffer
 		home := t.TempDir()
 		called := false
-		a := App{Home: home, Out: &out, Err: &diag, Probe: &fakeProbe{signed: true}, UsageSource: usage.Unsupported{}, Classifier: &fakeClassifier{}, Execute: func(string, []string, []string) error {
+		a := App{Home: home, Out: &out, Err: &diag, Probe: &fakeProbe{signed: true}, UsageSource: usage.Unsupported{}, Classifier: &fakeClassifier{}, Execute: func(string, []string, []string) (int, error) {
 			called = true
 			if failed {
-				return errors.New("fake-test-value")
+				return 1, errors.New("fake-test-value")
 			}
-			return nil
+			return 7, nil
 		}}
 		code := a.Run([]string{"run", "fake task"})
-		if !called || (failed && code != 1) || (!failed && code != 0) {
+		if !called || (failed && code != 1) || (!failed && code != 7) {
 			t.Fatal("launch exit")
 		}
 		records, err := decision.Read(decision.Path(home, ""))
-		if err != nil || len(records) != 1 || records[0].DryRun || records[0].ExitCode != nil || records[0].DurationMS != nil {
+		if err != nil || len(records) != 1 || records[0].DryRun || records[0].ExitCode == nil || *records[0].ExitCode != code || records[0].DurationMS == nil {
 			t.Fatal("launch log")
 		}
 		if bytes.Contains(diag.Bytes(), []byte("fake-test-value")) {
@@ -244,7 +244,7 @@ func TestReportsNeverAppendLog(t *testing.T) {
 			if err != nil {
 				t.Fatal(err)
 			}
-			a := App{Home: home, Env: []string{"XDG_DATA_HOME=" + data, "SB_CLASSIFIER_PROVIDER=off"}, Out: &out, Err: &diag, Probe: &fakeProbe{signed: true}, UsageSource: usage.Unsupported{}, Classifier: forbiddenClassifier{t}, Execute: func(string, []string, []string) error { t.Fatal("report launched"); return nil }}
+			a := App{Home: home, Env: []string{"XDG_DATA_HOME=" + data, "SB_CLASSIFIER_PROVIDER=off"}, Out: &out, Err: &diag, Probe: &fakeProbe{signed: true}, UsageSource: usage.Unsupported{}, Classifier: forbiddenClassifier{t}, Execute: func(string, []string, []string) (int, error) { t.Fatal("report launched"); return 0, nil }}
 			args := []string{command, "--json"}
 			if command == "cooldown" {
 				args = append(args, "codex/work", "--dry-run")

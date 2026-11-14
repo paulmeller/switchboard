@@ -276,3 +276,38 @@ func TestToolAccountsInvalid(t *testing.T) {
 		t.Fatal("tilde home and empty pool must be accepted", err)
 	}
 }
+
+func TestClaudeToolAccounts(t *testing.T) {
+	c, err := load(t, `[[tool_accounts]]
+id = "claude/personal"
+label = "Claude (personal)"
+config_dir = "~/profiles/personal"
+[[tool_accounts]]
+id = "claude/work"
+label = "Claude (work)"
+config_dir = "/profiles/work"
+`)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(c.Registry) != 5 || c.Registry[0].ID() != "claude/work" || c.Registry[0].ConfigDir != "/profiles/work" || c.Registry[1].ConfigDir != "~/profiles/personal" || c.Registry[4].ID() != "agy/personal" {
+		t.Fatal("Claude overlay changed registry order or agy default")
+	}
+	for _, body := range []string{
+		`id="claude/other"`,
+		"id=\"claude/work\"\nhome=\"\"",
+		"id=\"claude/work\"\nquota_pool=\"\"",
+		"id=\"agy/work\"\nconfig_dir=\"\"",
+		"id=\"claude/work\"\nhome=\"/profiles/work\"",
+		"id=\"claude/work\"\nquota_pool=\"shared\"",
+		"id=\"agy/work\"\nconfig_dir=\"/profiles/work\"",
+		"id=\"claude/work\"\nconfig_dir=\"relative\"",
+		"id=\"claude/work\"\nconfig_dir=\"/bad\\npath\"",
+		"id=\"claude/work\"\nconfig_dir=\"/bad\\rpath\"",
+		"id=\"claude/work\"\n[[tool_accounts]]\nid=\"claude/work\"\nlabel=\"Duplicate\"",
+	} {
+		if _, err := load(t, "[[tool_accounts]]\nlabel=\"Claude\"\n"+body); err == nil {
+			t.Fatal("invalid Claude entry accepted")
+		}
+	}
+}

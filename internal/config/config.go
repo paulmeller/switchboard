@@ -86,13 +86,13 @@ type Config struct {
 	Registry provider.Registry `toml:"-"`
 }
 
-// ToolAccount declares one Antigravity launch account. Claude and Codex
-// accounts are built in and cannot be declared here.
+// ToolAccount declares an Antigravity account or overlays a built-in Claude account.
 type ToolAccount struct {
 	ID        string `toml:"id"`
 	Label     string `toml:"label"`
 	Home      string `toml:"home"`
 	QuotaPool string `toml:"quota_pool"`
+	ConfigDir string `toml:"config_dir"`
 }
 
 var poolID = regexp.MustCompile(`^[A-Za-z0-9][A-Za-z0-9_.:-]{0,63}$`)
@@ -104,8 +104,8 @@ func Registry(accounts []ToolAccount) (provider.Registry, error) {
 	for _, t := range accounts {
 		tool, profile, ok := strings.Cut(t.ID, "/")
 		a := provider.Account{Tool: tool, Profile: profile}
-		if !ok || tool != "agy" || !a.Valid() {
-			return nil, errors.New("tool_accounts id must be agy/<profile> with a letter, digit, '.', '_' or '-' profile")
+		if !ok || (tool != "agy" && tool != "claude") || !a.Valid() {
+			return nil, errors.New("tool_accounts id must be claude/work, claude/personal or agy/<profile>")
 		}
 		if seen[a.ID()] {
 			return nil, errors.New("duplicate tool_accounts id " + a.ID())
@@ -115,13 +115,22 @@ func Registry(accounts []ToolAccount) (provider.Registry, error) {
 		if label == "" || label != t.Label || len(label) > 64 || strings.ContainsAny(label, "@\r\n\t") {
 			return nil, errors.New("tool_accounts " + a.ID() + " label must be non-empty, at most 64 characters, and not an email")
 		}
+		if tool == "claude" && (t.Home != "" || t.QuotaPool != "") {
+			return nil, errors.New("Claude entries cannot set home or quota_pool")
+		}
+		if tool == "agy" && t.ConfigDir != "" {
+			return nil, errors.New("config_dir is only valid for Claude")
+		}
+		if t.ConfigDir != "" && (strings.ContainsAny(t.ConfigDir, "\r\n") || !(filepath.IsAbs(t.ConfigDir) || t.ConfigDir == "~" || strings.HasPrefix(t.ConfigDir, "~/"))) {
+			return nil, errors.New("config_dir must be absolute or start with ~/")
+		}
 		if t.Home != "" && (strings.ContainsAny(t.Home, "\r\n") || !(filepath.IsAbs(t.Home) || t.Home == "~" || strings.HasPrefix(t.Home, "~/"))) {
 			return nil, errors.New("tool_accounts " + a.ID() + " home must be absolute or start with ~/")
 		}
 		if t.QuotaPool != "" && !poolID.MatchString(t.QuotaPool) {
 			return nil, errors.New("tool_accounts " + a.ID() + " quota_pool must be a simple id")
 		}
-		specs = append(specs, provider.Spec{Account: a, Label: label, Home: t.Home, QuotaPool: t.QuotaPool})
+		specs = append(specs, provider.Spec{Account: a, Label: label, Home: t.Home, QuotaPool: t.QuotaPool, ConfigDir: t.ConfigDir})
 	}
 	return provider.NewRegistry(specs), nil
 }
@@ -157,9 +166,24 @@ func Load(path, envDefault, flagDefault string, overrides ...Classifier) (Config
 		var presence struct {
 			Confidence   *float64 `toml:"confidence"`
 			AccountFloor *float64 `toml:"account_floor"`
+			ToolAccounts []struct {
+				ID        string  `toml:"id"`
+				Home      *string `toml:"home"`
+				QuotaPool *string `toml:"quota_pool"`
+				ConfigDir *string `toml:"config_dir"`
+			} `toml:"tool_accounts"`
 		}
 		if toml.Unmarshal(b, &presence) != nil {
 			return c, errors.New("invalid TOML config")
+		}
+		for _, t := range presence.ToolAccounts {
+			tool, _, _ := strings.Cut(t.ID, "/")
+			if tool == "claude" && (t.Home != nil || t.QuotaPool != nil) {
+				return c, errors.New("Claude entries cannot set home or quota_pool")
+			}
+			if tool == "agy" && t.ConfigDir != nil {
+				return c, errors.New("config_dir is only valid for Claude")
+			}
 		}
 		if presence.AccountFloor == nil && presence.Confidence != nil {
 			c.AccountFloor = *presence.Confidence

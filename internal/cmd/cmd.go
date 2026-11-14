@@ -69,7 +69,7 @@ type App struct {
 	Home        string
 	Env         []string
 	Probe       provider.Probe
-	Execute     provider.Executor
+	Execute     provider.Runner
 	UsageSource usage.Source
 	Classifier  classifier.Classifier
 }
@@ -80,7 +80,7 @@ func Main(args []string) int {
 		fmt.Fprintln(os.Stderr, "sb: cannot resolve home")
 		return 2
 	}
-	return (&App{Out: os.Stdout, Err: os.Stderr, Home: home, Env: os.Environ(), Execute: provider.Exec}).Run(args)
+	return (&App{Out: os.Stdout, Err: os.Stderr, Home: home, Env: os.Environ(), Execute: provider.Run}).Run(args)
 }
 
 func (a *App) value(k string) string {
@@ -483,8 +483,10 @@ parsedVersion:
 	if conf.Pin != "" {
 		d.Label = &decision.Label{Family: family, Account: pick.ID()}
 	}
-	if id := a.logDecision(c, conf, d); id != "" {
-		result["id"] = id
+	if c.DryRun {
+		if id := a.logDecision(c, conf, d); id != "" {
+			result["id"] = id
+		}
 	}
 
 	if raw.OK {
@@ -518,10 +520,7 @@ parsedVersion:
 		return a.emit(c, result, lines)
 	}
 	fmt.Fprintln(a.Err, "sb: "+line)
-	if e := provider.Launch(conf.Registry.Spec(pick), provider.TaskArgs(pick, c.Run.Task), a.Home, a.Env, false, a.Execute); e != nil {
-		return a.fail(1, e.Error())
-	}
-	return 0
+	return a.launchAndLog(c, conf, d, conf.Registry.Spec(pick), provider.TaskArgs(pick, c.Run.Task))
 }
 
 func schemaNode(n *kong.Node) map[string]any {
