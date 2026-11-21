@@ -1,0 +1,133 @@
+package cmd
+
+import (
+	"context"
+	"path/filepath"
+	"time"
+
+	"switchboard/internal/config"
+	"switchboard/internal/decision"
+	"switchboard/internal/picker"
+	"switchboard/internal/provider"
+	"switchboard/internal/state"
+	"switchboard/internal/usage"
+)
+
+func (a *App) launchFamily(c CLI, family string, accountFlag bool) int {
+	argv := c.Claude.Args
+	switch family {
+	case "codex":
+		argv = c.Codex.Args
+	case "agy":
+		argv = c.Agy.Args
+	}
+	conf, err := a.loadConfig(c)
+	if err != nil {
+		return a.fail(2, err.Error())
+	}
+	reg := conf.Registry
+	pin := ""
+	positionalPin := false
+	if len(argv) > 0 {
+		if _, ok := reg.Lookup(provider.Account{Tool: family, Profile: argv[0]}); ok {
+			pin = family + "/" + argv[0]
+			positionalPin = true
+			argv = argv[1:]
+		}
+	}
+	if len(argv) > 0 && argv[0] == "--" {
+		argv = argv[1:]
+	}
+	if accountFlag {
+		account, err := reg.Parse(c.Account)
+		if err != nil || account.Tool != family {
+			return a.fail(2, "--account must name a configured account in the selected family")
+		}
+		if positionalPin && account.ID() != pin {
+			return a.fail(2, "choose either a positional profile or --account")
+		}
+		pin = account.ID()
+	}
+	// Environment and TOML pins apply only to task routing.
+	conf.Pin = pin
+	statePath := state.Path(a.Home, a.value("XDG_STATE_HOME"))
+	var s state.State
+	if pin == "" {
+		var err error
+		s, err = state.Load(statePath)
+		if err != nil {
+			return a.fail(2, err.Error())
+		}
+	}
+	logged := false
+	defer func() {
+		if !logged {
+			a.logDecision(c, conf, decision.Decision{ExplicitFamily: true, Source: "rules", Reason: "routing failed before account selection"})
+		}
+	}()
+	pick := provider.Account{}
+	reason := "pinned account; usage selection bypassed"
+	if pin != "" {
+		pick, _ = reg.Parse(pin)
+	} else {
+		ctx, now := context.Background(), time.Now()
+		statuses := []provider.Status{}
+		for _, st := range a.statuses(ctx, reg) {
+			// Only shared-pool representatives are eligible without a pin.
+			if st.Tool == family && reg.Auto(st.Account) {
+				statuses = append(statuses, st)
+			}
+		}
+		rows := a.selectionUsage(ctx, c, conf, statuses, s, statePath, now)
+		pick, reason, _ = picker.Pick(reg, []string{family}, statuses, s, rows, conf.UsageExhaustedPct, conf.HarvestMinHeadroomPct, conf.HarvestWindowHours, now)
+		if !pick.Valid() {
+			return a.fail(3, "no eligible signed-in account; check sb status and local cooldowns")
+		}
+	}
+	d := decision.Decision{Record: decision.Record{Family: family, Account: pick.ID()}, ExplicitFamily: true, Source: "rules", Reason: reason}
+	if pin != "" {
+		d.Label = &decision.Label{Family: family, Account: pick.ID()}
+	}
+	logged = true
+	result := map[string]string{"tool": pick.Tool, "profile": pick.Profile, "reason": reason}
+	if c.DryRun {
+		if id := a.logDecision(c, conf, d); id != "" {
+			result["id"] = id
+		}
+		return a.emit(c, result, []string{pick.ID() + "\t" + reason})
+	}
+	return a.launchAndLog(c, conf, d, reg.Spec(pick), argv)
+}
+
+func (a *App) selectionUsage(ctx context.Context, c CLI, conf config.Config, statuses []provider.Status, s state.State, statePath string, now time.Time) []usage.Row {
+	needed := []usage.Row{}
+	for _, r := range usage.Rows(conf.Registry) {
+		for _, st := range statuses {
+			if st.Tool == r.Tool && st.Profile == r.Profile && st.LoginOK != nil && *st.LoginOK && s.Eligible(st.Account, now) {
+				needed = append(needed, r)
+			}
+		}
+	}
+	src := a.UsageSource
+	if src == nil {
+		src = usage.Live(a.Home, a.Env, conf.Registry)
+	}
+	ttl, _ := time.ParseDuration(conf.UsageCacheTTL)
+	return picker.Cached(ctx, src, filepath.Join(filepath.Dir(statePath), "usage-cache.json"), needed, ttl, 2*time.Second, now, !c.DryRun)
+}
+
+func (a *App) launchAndLog(c CLI, conf config.Config, d decision.Decision, spec provider.Spec, args []string) int {
+	start := time.Now()
+	code, err := provider.Launch(spec, args, a.Home, a.Env, false, a.Execute)
+	elapsed := time.Since(start).Milliseconds()
+	if err != nil {
+		code = 1
+		d.Reason = "launch failed: " + err.Error() + "; " + d.Reason
+	}
+	d.ExitCode, d.DurationMS = &code, &elapsed
+	a.logDecision(c, conf, d)
+	if err != nil {
+		return a.fail(1, err.Error())
+	}
+	return code
+}

@@ -1,0 +1,115 @@
+# Built-in accounts: claude/work, claude/personal, codex/work, codex/personal.
+# Antigravity accounts come from [[tool_accounts]] below; with none declared sb
+# uses one implicit agy/personal (label "Antigravity", process HOME, no pool).
+# Antigravity is used only when selected (rule/default "agy", Jev, or a pin),
+# never as a fallback. One usage row per Antigravity account comes from the
+# built-in `agy --output-format json --print /usage` slash command (20s per row).
+# Defaults/rules prefer only a family; legacy tool/profile values ignore profile.
+default = "codex"
+# Hard pin (optional): skips Jev and usage selection; unavailable exits 3.
+# pin = "codex/work"
+# Any known weekly/five-hour usage >= this finite 0..100 cap is exhausted.
+# Rank under-cap remaining quota, unknown, exhausted remaining quota, fully used.
+usage_exhausted_pct = 95
+# Harvest only under-cap accounts with at least this binding headroom (finite 0..100).
+# Binding usage is max(known weekly, five-hour); equal usage binds to sooner reset.
+harvest_min_headroom_pct = 10
+# Prefer the soonest binding-window reset only if future and within these hours.
+# Finite and >= 0; zero disables harvesting. Otherwise prefer most headroom.
+# Fully used accounts prefer soonest known binding reset; ties prefer work.
+harvest_window_hours = 6
+usage_cache_ttl = "60s"
+# Both floors are finite 0..1; TOML-only settings in v0.1.
+account_floor = 0.5
+difficulty_floor = 0.5
+# Legacy confidence maps to account_floor only if account_floor is omitted.
+# Explicit account_floor wins; omitting both now defaults to 0.5, formerly 0.8.
+# confidence = 0.8
+
+[[rules]]
+contains = "design"
+account = "claude/work"
+
+[[rules]]
+contains = "test"
+account = "codex"
+
+# Optional classifier; no key means deterministic rules. Provider defaults to
+# typesafe: https://api.typesafe.ai, jev-1.14.0, TYPESAFE_API_KEY.
+# Set provider = "off" to disable external classification.
+# WARNING: routing dry-run and classify also send task text when a classifier key is present.
+# Overrides (flags > env > TOML > defaults):
+# --classifier-provider / SB_CLASSIFIER_PROVIDER
+# --classifier-base-url / SB_CLASSIFIER_BASE_URL
+# --classifier-model / SB_CLASSIFIER_MODEL
+#
+# [classifier]
+# provider = "ai-gateway"
+# base_url = "https://ai-gateway.vercel.sh/typesafe"
+# model = "typesafe-ai/jev-1.14.0"
+# api_key_env = "AI_GATEWAY_API_KEY"
+# api_key_file = ""     # optional path; ~/ expands to home
+# api_key_keychain = "" # optional macOS generic-password service name
+# Keys: env, then file, then macOS Keychain; whitespace is trimmed.
+# Missing, unreadable or empty sources fall through, then rules apply.
+
+# Family criteria: provided fields replace individual built-in fields.
+# Unknown IDs allowed; only available launchable families enter Choice.
+# [accounts.codex]
+# what = "Implementation, tests, refactors and everyday coding"
+# not_for = "Design, architecture, writing and harder reasoning belong to Claude"
+# examples = ["fix a flaky test", "refactor a scraper", "add a CLI command"]
+# [accounts.agy]
+# what = "Tasks that explicitly ask for Antigravity or Gemini models via the agy CLI"
+#
+# Route matching tasks to Antigravity (balances auto-eligible agy accounts):
+# [[rules]]
+# contains = "antigravity"
+# account = "agy"
+
+# Antigravity accounts (optional). id = "agy/<profile>" (positional pin name)
+# and a safe label (never an email) are required. home is optional: absolute or
+# ~/...; omitted keeps the process HOME, set isolates HOME/XDG under it.
+# quota_pool is optional: accounts sharing an id share one allowance; automatic
+# selection only uses the first configured member and never another member for
+# capacity. Other members are used only when pinned (sb agy second).
+# [[tool_accounts]]
+# id = "agy/work"
+# label = "Antigravity (work)"
+#
+# [[tool_accounts]]
+# id = "agy/second"
+# label = "Antigravity (second)"
+# home = "/path/to/agy-second-profile"
+# quota_pool = "shared-pool-id"
+
+# Routed tasks, including dry-run/classify, append a local JSONL decision.
+# $XDG_DATA_HOME/switchboard/decisions.jsonl (default ~/.local/share/switchboard).
+# Directory 0700, files 0600. Rotate to one .1 before exceeding max_bytes.
+# Use --no-log to suppress routing writes. Explicit feedback always writes.
+# Real launches log child exit_code and duration_ms after wait (failure: exit 1).
+# Dry-run/classify keep both null. Pins supply implicit labels.
+[log]
+enabled = true
+max_bytes = 5242880 # positive integer; a single line is never split
+redact_task = false # true: task=null, SHA-256 of raw task bytes retained
+
+# Claude and Codex also support arbitrary profiles via [[tool_accounts]]:
+# - Claude supports config_dir (isolated dir) or token_env (env var name)
+# - Codex supports home (CODEX_HOME; defaults to ~/.codex-<profile>)
+# [[tool_accounts]]
+# id = "claude/work"
+# label = "Claude (work)"
+# config_dir = "~/.local/share/claude-usage/work"
+#
+# [[tool_accounts]]
+# id = "claude/client"
+# label = "Claude (client)"
+# plan = "Max"
+# token_env = "CLAUDE_OAUTH_TOKEN_CLIENT"
+#
+# [[tool_accounts]]
+# id = "codex/client"
+# label = "Codex (client)"
+# plan = "Pro"
+# home = "~/.codex-client"
