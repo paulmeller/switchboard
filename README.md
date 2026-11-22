@@ -74,22 +74,16 @@ sb 'implement the parser'
 
 ## Profiles & Accounts
 
-Each tool isolates profiles using its own native mechanism — `sb` never reads
-or writes credential files:
-
-| Tool | Default profiles | Custom profiles (`[[tool_accounts]]`) | How profiles isolate |
-|---|---|---|---|
-| `claude` | `work`, `personal` | Any `claude/<name>` | `token_env` (or `CLAUDE_OAUTH_TOKEN_1`/`2`) -> `CLAUDE_CODE_OAUTH_TOKEN` (strips `ANTHROPIC_API_KEY`), or `config_dir` -> `CLAUDE_CONFIG_DIR` |
-| `codex` | `work`, `personal` | Any `codex/<name>` | `CODEX_HOME` (`~/.codex`, `~/.codex-personal`, `~/.codex-<name>`, or custom `home`) |
-| `agy` | `personal` (implicit) | Any `agy/<name>` | Process `HOME`, or isolated `HOME` + `XDG_*` dirs when `home` is set |
-
-With no `[[tool_accounts]]`, `sb` falls back to those implicit defaults so it
-works out of the box. Declaring any `[[tool_accounts]]` for a tool (`claude`,
-`codex`, or `agy`) **replaces** that tool's implicit defaults with your
-configured list in
-`$XDG_CONFIG_HOME/switchboard/config.toml` (default
+Declare your accounts in `$XDG_CONFIG_HOME/switchboard/config.toml` (default
 `~/.config/switchboard/config.toml` — see
-[config.example.toml](config.example.toml)):
+[config.example.toml](config.example.toml)). Each tool isolates profiles using
+its own native mechanism — `sb` never reads or writes credential files:
+
+| Tool | Account ID | How profiles isolate |
+|---|---|---|
+| `claude` | `claude/<name>` | `config_dir` -> `CLAUDE_CONFIG_DIR`, or `token_env` -> `CLAUDE_CODE_OAUTH_TOKEN` (strips `ANTHROPIC_API_KEY`) |
+| `codex` | `codex/<name>` | `home` -> `CODEX_HOME` (defaults to `~/.codex-<name>`) |
+| `agy` | `agy/<name>` | `home` -> isolated `HOME` + `XDG_*` dirs (or process `HOME` if omitted) |
 
 ```toml
 [[tool_accounts]]
@@ -115,6 +109,10 @@ home = "~/profiles/agy-second"
 quota_pool = "shared-pool-id"
 ```
 
+- **With no `[[tool_accounts]]` for a tool**, `sb` falls back to implicit
+  defaults (`claude/{work,personal}` using `CLAUDE_OAUTH_TOKEN_1`/`2`,
+  `codex/{work,personal}` using `~/.codex` / `~/.codex-personal`, and
+  `agy/personal`). Declaring any entry for a tool replaces its defaults.
 - **Custom `claude` profiles** require either `config_dir` (isolated sign-in
   directory) or `token_env` (name of an exported env var).
 - **Custom `codex` profiles** accept `home` (defaulting to
