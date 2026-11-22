@@ -186,7 +186,7 @@ func (c Config) ParseAccount(s string) (provider.Account, error) {
 }
 
 func Load(path, envDefault, flagDefault string, overrides ...Classifier) (Config, error) {
-	c := Config{Log: Log{Enabled: true, MaxBytes: 5242880}, Default: "codex/work", UsageExhaustedPct: 95, HarvestMinHeadroomPct: 10, HarvestWindowHours: 6, UsageCacheTTL: "60s", AccountFloor: 0.5, DifficultyFloor: 0.5}
+	c := Config{Log: Log{Enabled: true, MaxBytes: 5242880}, Default: "codex", UsageExhaustedPct: 95, HarvestMinHeadroomPct: 10, HarvestWindowHours: 6, UsageCacheTTL: "60s", AccountFloor: 0.5, DifficultyFloor: 0.5}
 	b, e := os.ReadFile(path)
 	if e == nil {
 		if toml.NewDecoder(bytes.NewReader(b)).DisallowUnknownFields().Decode(&c) != nil {

@@ -292,8 +292,8 @@ config_dir = "/profiles/work"
 	if err != nil {
 		t.Fatal(err)
 	}
-	if len(c.Registry) != 5 || c.Registry[0].ID() != "claude/work" || c.Registry[0].ConfigDir != "/profiles/work" || c.Registry[1].ConfigDir != "~/profiles/personal" || c.Registry[4].ID() != "agy/personal" {
-		t.Fatal("Claude overlay changed registry order or agy default")
+	if len(c.Registry) != 5 || c.Registry[0].ID() != "claude/personal" || c.Registry[0].ConfigDir != "~/profiles/personal" || c.Registry[1].ID() != "claude/work" || c.Registry[1].ConfigDir != "/profiles/work" || c.Registry[4].ID() != "agy/personal" {
+		t.Fatal("Claude config order or agy default mismatch")
 	}
 	for _, body := range []string{
 		"id=\"claude/work\"\nhome=\"\"",
@@ -318,7 +318,8 @@ config_dir = "/profiles/work"
 }
 
 func TestArbitraryClaudeAndCodexProfiles(t *testing.T) {
-	c, err := load(t, `[[tool_accounts]]
+	p := filepath.Join(t.TempDir(), "config.toml")
+	os.WriteFile(p, []byte(`[[tool_accounts]]
 id = "claude/client"
 label = "Claude (client)"
 plan = "Max"
@@ -328,7 +329,8 @@ id = "codex/client"
 label = "Codex (client)"
 plan = "Pro"
 home = "~/codex-client"
-`)
+`), 0o600)
+	c, err := Load(p, "", "")
 	if err != nil {
 		t.Fatal(err)
 	}
