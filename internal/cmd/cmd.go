@@ -43,10 +43,12 @@ type CLI struct {
 	Claude             Launch   `cmd:"" passthrough:"" help:"Balance Claude accounts and exec; optional profile pin."`
 	Codex              Launch   `cmd:"" passthrough:"" help:"Balance Codex accounts and exec; optional profile pin."`
 	Agy                Launch   `cmd:"" passthrough:"" help:"Balance configured Antigravity accounts and exec; optional profile pin."`
+	Grok               Launch   `cmd:"" passthrough:"" help:"Balance configured Grok accounts and exec; optional profile pin."`
 	Status             struct{} `cmd:"" help:"Check launch account login states, not credits."`
 	Doctor             struct{} `cmd:"" help:"Check local prerequisites without changing them."`
 	Usage              struct{} `cmd:"" help:"Read safe live usage; unknown values remain null."`
 	Schema             struct{} `cmd:"" help:"Describe actual commands and output contracts."`
+	MCP                struct{} `cmd:"" help:"Run a stdio MCP server exposing switchboard tools for grokbot and other agents."`
 	Classify           struct {
 		Task string `arg:"" help:"Task to classify without launching."`
 	} `cmd:"" help:"Calibrate routing; may send task text to Jev."`
@@ -59,6 +61,9 @@ type CLI struct {
 	Run  struct {
 		Task string `arg:"" help:"Task prompt (quote as one argument)."`
 	} `cmd:"" help:"Route a task and exec the selected tool."`
+	Exec struct {
+		Task string `arg:"" help:"Task prompt to run non-interactively on the selected CLI."`
+	} `cmd:"" help:"Route a task and run the selected CLI in headless/print mode."`
 	Cooldown struct {
 		Account  string        `arg:"" help:"tool/profile"`
 		Duration time.Duration `help:"Local cooldown duration after a 429." default:"1h"`
@@ -97,7 +102,7 @@ func (a *App) value(k string) string {
 }
 func (a *App) fail(code int, msg string) int { fmt.Fprintln(a.Err, "sb: "+msg); return code }
 func normalize(args []string) []string {
-	known := map[string]bool{"feedback": true, "tune": true, "classify": true, "run": true, "status": true, "doctor": true, "usage": true, "schema": true, "claude": true, "codex": true, "agy": true, "cooldown": true, "login": true}
+	known := map[string]bool{"feedback": true, "tune": true, "classify": true, "run": true, "exec": true, "mcp": true, "status": true, "doctor": true, "usage": true, "schema": true, "claude": true, "codex": true, "agy": true, "grok": true, "cooldown": true, "login": true}
 	for i := 0; i < len(args); i++ {
 		v := args[i]
 		if v == "--config" || v == "--account" || v == "--classifier-provider" || v == "--classifier-base-url" || v == "--classifier-model" {
@@ -204,6 +209,9 @@ parsedVersion:
 			"entry_keys": map[string]string{"tool": "extensible string", "profile": "string", "account": "string|null", "plan": "configured string|null", "login_ok": "boolean|null", "weekly_used_pct": "number 0..100|null", "weekly_resets_at": "RFC3339|null", "five_hour_used_pct": "number 0..100|null", "five_hour_resets_at": "RFC3339|null", "extra": "object", "source": "string|null", "error": "safe string|null", "checked_at": "RFC3339 UTC read/fetch time; cache rows use cache read time; error rows use attempt time"}, "sources": "live read-only Codex RPC, Claude login, Antigravity agy --output-format json --print /usage slash command, Grok usage; unsupported quotas null", "all_source_failure_exit": 1, "partial_success_exit": 0,
 		}, "precedence": []string{"flags", "environment", "config", "defaults"}}, []string{"sb schema --json"})
 	}
+	if name == "mcp" {
+		return a.serveMCP(c)
+	}
 	if name == "feedback" || name == "tune" {
 		// A routing environment pin is not an explicit feedback correction.
 		if name == "feedback" {
@@ -296,7 +304,7 @@ parsedVersion:
 			}
 			add("classifier key present", present, fix)
 		}
-		for _, tool := range []string{"claude", "codex", "agy"} {
+		for _, tool := range []string{"claude", "codex", "agy", "grok"} {
 			_, e := exec.LookPath(tool)
 			add(tool+" binary", e == nil, "Install genuine CLI and add it to PATH")
 		}
@@ -327,6 +335,11 @@ parsedVersion:
 					info, e := os.Stat(provider.AgyHome(spec, a.Home))
 					add(spec.ID()+" home directory", e == nil && info.IsDir(), "Create the configured home and sign in with the genuine agy CLI using that HOME")
 				}
+			case "grok":
+				if spec.Home != "" {
+					info, e := os.Stat(provider.GrokHome(spec, a.Home))
+					add(spec.ID()+" home directory", e == nil && info.IsDir(), "Create the configured home and sign in with the genuine grok CLI using that HOME")
+				}
 			}
 		}
 		if e := a.emit(c, map[string]any{"checks": checks}, lines); e != 0 {
@@ -334,7 +347,7 @@ parsedVersion:
 		}
 		return code
 	}
-	if name == "claude" || name == "codex" || name == "agy" {
+	if name == "claude" || name == "codex" || name == "agy" || name == "grok" {
 		explicit := false
 		for _, step := range ctx.Path {
 			if step.Flag != nil && step.Flag.Name == "account" && !step.Resolved {
@@ -371,6 +384,10 @@ parsedVersion:
 			}
 		}
 		return a.emit(c, map[string]any{"account": account.ID(), "until": until.Format(time.RFC3339), "dry_run": c.DryRun}, []string{account.ID() + "\tcooldown reported"})
+	}
+	headless := name == "exec"
+	if name == "exec" {
+		c.Run.Task = c.Exec.Task
 	}
 	if name == "classify" {
 		c.Run.Task = c.Classify.Task
@@ -421,7 +438,7 @@ parsedVersion:
 				}
 			}
 		}
-		for _, f := range config.Fallback(order) {
+		for _, f := range config.Fallback(order, conf.AllowMeteredFallback) {
 			for _, e := range eligible {
 				if f == e && family == "" {
 					family = f
@@ -461,7 +478,7 @@ parsedVersion:
 			}
 		}
 		familyOrder := []string{family}
-		for _, f := range config.Fallback(order) {
+		for _, f := range config.Fallback(order, conf.AllowMeteredFallback) {
 			if f != family {
 				familyOrder = append(familyOrder, f)
 			}
@@ -538,7 +555,11 @@ parsedVersion:
 		return a.emit(c, result, lines)
 	}
 	fmt.Fprintln(a.Err, "sb: "+line)
-	return a.launchAndLog(c, conf, d, conf.Registry.Spec(pick), provider.TaskArgs(pick, c.Run.Task))
+	taskArgs := provider.TaskArgs(pick, c.Run.Task)
+	if headless {
+		taskArgs = provider.HeadlessArgs(pick, c.Run.Task)
+	}
+	return a.launchAndLog(c, conf, d, conf.Registry.Spec(pick), taskArgs)
 }
 
 func (a *App) loginAccount(c CLI) int {
@@ -569,6 +590,12 @@ func (a *App) loginAccount(c CLI) int {
 		if spec.Home != "" && !c.DryRun {
 			if err := os.MkdirAll(provider.AgyHome(spec, a.Home), 0o700); err != nil {
 				return a.fail(1, "cannot create Antigravity home")
+			}
+		}
+	case "grok":
+		if spec.Home != "" && !c.DryRun {
+			if err := os.MkdirAll(provider.GrokHome(spec, a.Home), 0o700); err != nil {
+				return a.fail(1, "cannot create Grok home")
 			}
 		}
 	}

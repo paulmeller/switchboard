@@ -6,6 +6,8 @@
 # built-in `agy --output-format json --print /usage` slash command (20s per row).
 # Defaults/rules prefer only a family; legacy tool/profile values ignore profile.
 default = "codex"
+# Only fall back to metered grok when all flat-rate subscriptions are unavailable.
+allow_metered_fallback = false
 # Hard pin (optional): skips Jev and usage selection; unavailable exits 3.
 # pin = "codex/work"
 # Any known weekly/five-hour usage >= this finite 0..100 cap is exhausted.

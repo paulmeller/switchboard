@@ -132,7 +132,7 @@ func TestAgyImplicitDefault(t *testing.T) {
 		t.Fatal(diag.String())
 	}
 	var status struct{ Accounts []map[string]any }
-	if json.Unmarshal(out.Bytes(), &status) != nil || len(status.Accounts) != 5 || status.Accounts[4]["tool"] != "agy" || status.Accounts[4]["profile"] != "personal" {
+	if json.Unmarshal(out.Bytes(), &status) != nil || len(status.Accounts) != 6 || status.Accounts[4]["tool"] != "agy" || status.Accounts[4]["profile"] != "personal" || status.Accounts[5]["tool"] != "grok" {
 		t.Fatal("implicit status", out.String())
 	}
 	out.Reset()
@@ -185,7 +185,7 @@ func TestAgyConfiguredAccounts(t *testing.T) {
 		t.Fatal(diag.String())
 	}
 	var status struct{ Accounts []map[string]any }
-	if json.Unmarshal(out.Bytes(), &status) != nil || len(status.Accounts) != 6 || status.Accounts[4]["profile"] != "work" || status.Accounts[5]["profile"] != "second" {
+	if json.Unmarshal(out.Bytes(), &status) != nil || len(status.Accounts) != 7 || status.Accounts[4]["profile"] != "work" || status.Accounts[5]["profile"] != "second" || status.Accounts[6]["tool"] != "grok" {
 		t.Fatal("configured status", out.String())
 	}
 	out.Reset()

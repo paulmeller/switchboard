@@ -37,7 +37,8 @@ func TestCooldownKeysAreSyntactic(t *testing.T) {
 		`{"agy/removed-profile":"2026-01-01T00:00:00Z"}`: true,
 		`{"codex/work":"2026-01-01T00:00:00Z"}`:          true,
 		`{"agy/":"2026-01-01T00:00:00Z"}`:                false,
-		`{"grok/cli":"2026-01-01T00:00:00Z"}`:            false,
+		`{"grok/cli":"2026-01-01T00:00:00Z"}`:            true,
+		`{"unknown/cli":"2026-01-01T00:00:00Z"}`:         false,
 		`{"codex/other":"2026-01-01T00:00:00Z"}`:         true,
 		`{"codex/-bad":"2026-01-01T00:00:00Z"}`:          false,
 	} {

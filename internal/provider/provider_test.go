@@ -33,9 +33,9 @@ func TestMapping(t *testing.T) {
 			if lookup(env, "ANTHROPIC_API_KEY") != "" || lookup(env, "CLAUDE_CODE_OAUTH_TOKEN") != "fixture-"+a.Profile {
 				t.Fatal("incorrect token mapping")
 			}
-		} else if a.Tool == "agy" {
+		} else if a.Tool == "agy" || a.Tool == "grok" {
 			if lookup(env, "CODEX_HOME") != "" || lookup(env, "CLAUDE_CODE_OAUTH_TOKEN") != "" {
-				t.Fatal("agy received another tool mapping")
+				t.Fatal("agy/grok received another tool mapping")
 			}
 		} else if lookup(env, "CODEX_HOME") != Home("/example", a.Profile) {
 			t.Fatal("incorrect home")
@@ -116,8 +116,8 @@ func fixtureRegistry(secondHome string) Registry {
 
 func TestRegistry(t *testing.T) {
 	def := NewRegistry(nil)
-	if len(Accounts()) != 4 || len(def) != 5 || def[4].ID() != "agy/personal" || def[4].Label != "Antigravity" || def[4].Home != "" || def[4].QuotaPool != "" || !def.Auto(def[4].Account) {
-		t.Fatal("implicit default agy account")
+	if len(Accounts()) != 4 || len(def) != 6 || def[4].ID() != "agy/personal" || def[4].Label != "Antigravity" || def[4].Home != "" || def[4].QuotaPool != "" || !def.Auto(def[4].Account) || def[5].ID() != "grok/cli" {
+		t.Fatal("implicit default agy/grok account")
 	}
 	if _, err := def.Parse("agy/personal"); err != nil {
 		t.Fatal("default pin rejected")
@@ -128,7 +128,7 @@ func TestRegistry(t *testing.T) {
 			t.Fatal("configured id rejected", id)
 		}
 	}
-	for _, id := range []string{"agy/personal", "agy", "agy/", "grok/cli", "codex/second", "agy/work/x"} {
+	for _, id := range []string{"agy/personal", "agy", "agy/", "unknown/cli", "codex/second", "agy/work/x"} {
 		if _, err := reg.Parse(id); err == nil {
 			t.Fatal("unconfigured id accepted", id)
 		}

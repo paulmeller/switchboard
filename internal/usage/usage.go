@@ -68,7 +68,6 @@ func Rows(reg provider.Registry) []Row {
 		}
 		add(spec.Tool, spec.Profile, plan, spec)
 	}
-	add("grok", "cli", "", provider.Spec{})
 	add("claude", "plain", "", provider.Spec{})
 	return rows
 }

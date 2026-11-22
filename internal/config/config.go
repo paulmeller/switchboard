@@ -69,6 +69,7 @@ type Log struct {
 type Config struct {
 	Log                   Log                 `toml:"log"`
 	Pin                   string              `toml:"pin"`
+	AllowMeteredFallback  bool                `toml:"allow_metered_fallback"`
 	UsageExhaustedPct     float64             `toml:"usage_exhausted_pct"`
 	HarvestMinHeadroomPct float64             `toml:"harvest_min_headroom_pct"`
 	HarvestWindowHours    float64             `toml:"harvest_window_hours"`
@@ -110,7 +111,7 @@ func Registry(accounts []ToolAccount) (provider.Registry, error) {
 		tool, profile, ok := strings.Cut(t.ID, "/")
 		a := provider.Account{Tool: tool, Profile: profile}
 		if !ok || !a.Valid() {
-			return nil, errors.New("tool_accounts id must be claude/<profile>, codex/<profile>, or agy/<profile>")
+			return nil, errors.New("tool_accounts id must be claude/<profile>, codex/<profile>, agy/<profile>, or grok/<profile>")
 		}
 		if seen[a.ID()] {
 			return nil, errors.New("duplicate tool_accounts id " + a.ID())
@@ -138,8 +139,8 @@ func Registry(accounts []ToolAccount) (provider.Registry, error) {
 		if tool != "claude" && (t.ConfigDir != "" || t.TokenEnv != "") {
 			return nil, errors.New("config_dir and token_env are only valid for Claude")
 		}
-		if tool == "codex" && t.QuotaPool != "" {
-			return nil, errors.New("Codex entries cannot set quota_pool")
+		if (tool == "codex" || tool == "grok") && t.QuotaPool != "" {
+			return nil, errors.New("Codex and Grok entries cannot set quota_pool")
 		}
 		if t.TokenEnv != "" {
 			if !envName.MatchString(t.TokenEnv) {
@@ -217,8 +218,8 @@ func Load(path, envDefault, flagDefault string, overrides ...Classifier) (Config
 			if tool != "claude" && (t.ConfigDir != nil || t.TokenEnv != nil) {
 				return c, errors.New("config_dir and token_env are only valid for Claude")
 			}
-			if tool == "codex" && t.QuotaPool != nil {
-				return c, errors.New("Codex entries cannot set quota_pool")
+			if (tool == "codex" || tool == "grok") && t.QuotaPool != nil {
+				return c, errors.New("Codex and Grok entries cannot set quota_pool")
 			}
 		}
 		if presence.AccountFloor == nil && presence.Confidence != nil {
@@ -327,30 +328,45 @@ func (c Config) Order(task string) ([]string, string) {
 	}
 	a, _ := c.Family(target)
 	out := []string{a}
+	seen := map[string]bool{a: true}
 	for _, other := range c.accounts().Accounts() {
-		if other.Tool != a && (len(out) == 1 || out[len(out)-1] != other.Tool) {
+		if other.Tool != "grok" && !seen[other.Tool] {
+			seen[other.Tool] = true
 			out = append(out, other.Tool)
+		}
+	}
+	if !seen["grok"] {
+		for _, other := range c.accounts().Accounts() {
+			if other.Tool == "grok" {
+				out = append(out, "grok")
+				break
+			}
 		}
 	}
 	return out, reason
 }
 
-// Fallback filters a family order for automatic fallback. Antigravity is only
-// reached when it is the selected family (rule/default, Jev or explicit pin),
-// never as a silent fallback from Claude or Codex.
-func Fallback(order []string) []string {
+// Fallback filters a family order for automatic fallback. Antigravity and
+// metered Grok are only reached when explicitly selected (rule/default, Jev,
+// or pin), unless AllowMeteredFallback permits Grok as a last resort.
+func Fallback(order []string, allowMetered ...bool) []string {
+	allowGrok := len(allowMetered) > 0 && allowMetered[0]
 	out := []string{}
 	for i, f := range order {
-		if f != "agy" || i == 0 {
-			out = append(out, f)
+		if f == "agy" && i != 0 {
+			continue
 		}
+		if f == "grok" && i != 0 && !allowGrok {
+			continue
+		}
+		out = append(out, f)
 	}
 	return out
 }
 
 // Family accepts a bare launchable family or a configured full account id.
 func (c Config) Family(s string) (string, error) {
-	if s == "claude" || s == "codex" || s == "agy" {
+	if s == "claude" || s == "codex" || s == "agy" || s == "grok" {
 		return s, nil
 	}
 	a, err := c.ParseAccount(s)

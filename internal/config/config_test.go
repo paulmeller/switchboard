@@ -204,12 +204,12 @@ func TestAgyAccounts(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	for _, v := range []string{"agy/personal", "codex/work", "claude/personal"} {
+	for _, v := range []string{"agy/personal", "codex/work", "claude/personal", "grok/cli"} {
 		if a, e := c.ParseAccount(v); e != nil || a.ID() != v {
 			t.Fatal("default account rejected", v)
 		}
 	}
-	for _, v := range []string{"agy/work", "agy/gemini", "agy", "grok/cli"} {
+	for _, v := range []string{"agy/work", "agy/gemini", "agy", "unknown/cli"} {
 		if _, e := c.ParseAccount(v); e == nil {
 			t.Fatal("invalid account accepted", v)
 		}
@@ -219,12 +219,12 @@ func TestAgyAccounts(t *testing.T) {
 			t.Fatal("agy family rejected", v)
 		}
 	}
-	if _, e := c.Family("grok"); e == nil {
-		t.Fatal("grok must stay non-launchable")
+	if _, e := c.Family("unknown"); e == nil {
+		t.Fatal("unknown family accepted")
 	}
 	order, _ := c.Order("fake task")
-	if !reflect.DeepEqual(order, []string{"codex", "claude", "agy"}) || !reflect.DeepEqual(Fallback(order), []string{"codex", "claude"}) || !reflect.DeepEqual(Fallback([]string{"agy", "claude", "codex"}), []string{"agy", "claude", "codex"}) {
-		t.Fatal("agy order/fallback", order)
+	if !reflect.DeepEqual(order, []string{"codex", "claude", "agy", "grok"}) || !reflect.DeepEqual(Fallback(order), []string{"codex", "claude"}) || !reflect.DeepEqual(Fallback(order, true), []string{"codex", "claude", "grok"}) || !reflect.DeepEqual(Fallback([]string{"agy", "claude", "codex"}), []string{"agy", "claude", "codex"}) {
+		t.Fatal("agy/grok order/fallback", order)
 	}
 
 	// Configured accounts replace the implicit default; pins and rules use them.
@@ -236,7 +236,7 @@ func TestAgyAccounts(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if len(c.Registry) != 6 || c.Registry[4].ID() != "agy/work" || c.Registry[4].Home != "" || c.Registry[5].Label != "Antigravity (second)" || c.Registry[5].Home != "/path/to/agy-second-profile" || c.Registry[5].QuotaPool != "shared-pool-id" {
+	if len(c.Registry) != 7 || c.Registry[4].ID() != "agy/work" || c.Registry[4].Home != "" || c.Registry[5].Label != "Antigravity (second)" || c.Registry[5].Home != "/path/to/agy-second-profile" || c.Registry[5].QuotaPool != "shared-pool-id" || c.Registry[6].ID() != "grok/cli" {
 		t.Fatal("configured registry", c.Registry)
 	}
 	if _, e := c.ParseAccount("agy/personal"); e == nil {
@@ -256,7 +256,7 @@ func TestToolAccountsInvalid(t *testing.T) {
 		"empty profile":    "[[tool_accounts]]\nid = \"agy/\"\nlabel = \"A\"\n",
 		"empty id":         "[[tool_accounts]]\nlabel = \"A\"\n",
 		"bad profile":      "[[tool_accounts]]\nid = \"agy/-x\"\nlabel = \"A\"\n",
-		"unknown tool":     "[[tool_accounts]]\nid = \"grok/work\"\nlabel = \"A\"\n",
+		"unknown tool":     "[[tool_accounts]]\nid = \"unknown/work\"\nlabel = \"A\"\n",
 		"bad token_env":    "[[tool_accounts]]\nid = \"claude/client\"\nlabel = \"A\"\ntoken_env = \"bad name\"\n",
 		"missing label":    "[[tool_accounts]]\nid = \"agy/work\"\n",
 		"blank label":      "[[tool_accounts]]\nid = \"agy/work\"\nlabel = \"  \"\n",
@@ -292,7 +292,7 @@ config_dir = "/profiles/work"
 	if err != nil {
 		t.Fatal(err)
 	}
-	if len(c.Registry) != 5 || c.Registry[0].ID() != "claude/personal" || c.Registry[0].ConfigDir != "~/profiles/personal" || c.Registry[1].ID() != "claude/work" || c.Registry[1].ConfigDir != "/profiles/work" || c.Registry[4].ID() != "agy/personal" {
+	if len(c.Registry) != 6 || c.Registry[0].ID() != "claude/personal" || c.Registry[0].ConfigDir != "~/profiles/personal" || c.Registry[1].ID() != "claude/work" || c.Registry[1].ConfigDir != "/profiles/work" || c.Registry[4].ID() != "agy/personal" || c.Registry[5].ID() != "grok/cli" {
 		t.Fatal("Claude config order or agy default mismatch")
 	}
 	for _, body := range []string{
@@ -334,8 +334,8 @@ home = "~/codex-client"
 	if err != nil {
 		t.Fatal(err)
 	}
-	if len(c.Registry) != 3 {
-		t.Fatalf("expected 3 accounts (claude/client, codex/client, agy/personal), got %d", len(c.Registry))
+	if len(c.Registry) != 4 {
+		t.Fatalf("expected 4 accounts (claude/client, codex/client, agy/personal, grok/cli), got %d", len(c.Registry))
 	}
 	claudeSpec, ok := c.Registry.Lookup(provider.Account{Tool: "claude", Profile: "client"})
 	if !ok || claudeSpec.TokenEnv != "CLAUDE_OAUTH_TOKEN_CLIENT" || claudeSpec.Plan != "Max" {

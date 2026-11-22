@@ -38,7 +38,7 @@ func (a Account) Valid() bool {
 	if a.Tool == "claude" && a.Profile == "plain" {
 		return false
 	}
-	return (a.Tool == "claude" || a.Tool == "codex" || a.Tool == "agy") && profileName.MatchString(a.Profile)
+	return (a.Tool == "claude" || a.Tool == "codex" || a.Tool == "agy" || a.Tool == "grok") && profileName.MatchString(a.Profile)
 }
 
 // ParseID splits tool/profile and applies the syntactic Valid check only.
@@ -71,9 +71,14 @@ func DefaultAgy() Spec {
 	return Spec{Account: Account{"agy", "personal"}, Label: "Antigravity"}
 }
 
+// DefaultGrok is the implicit Grok account when none is configured.
+func DefaultGrok() Spec {
+	return Spec{Account: Account{"grok", "cli"}, Label: "Grok"}
+}
+
 // Registry is the ordered set of launch accounts: configured accounts for each
-// tool (claude, codex, agy) in config order, or that tool's implicit defaults
-// when none are configured for it.
+// tool (claude, codex, agy, grok) in config order, or that tool's implicit
+// defaults when none are configured for it.
 type Registry []Spec
 
 func NewRegistry(specs []Spec) Registry {
@@ -96,10 +101,14 @@ func NewRegistry(specs []Spec) Registry {
 	if len(byTool["agy"]) == 0 {
 		byTool["agy"] = []Spec{DefaultAgy()}
 	}
-	r := make(Registry, 0, len(byTool["claude"])+len(byTool["codex"])+len(byTool["agy"]))
+	if len(byTool["grok"]) == 0 {
+		byTool["grok"] = []Spec{DefaultGrok()}
+	}
+	r := make(Registry, 0, len(byTool["claude"])+len(byTool["codex"])+len(byTool["agy"])+len(byTool["grok"]))
 	r = append(r, byTool["claude"]...)
 	r = append(r, byTool["codex"]...)
 	r = append(r, byTool["agy"]...)
+	r = append(r, byTool["grok"]...)
 	return r
 }
 
@@ -182,6 +191,26 @@ func AgyHome(s Spec, home string) string {
 	return ExpandHome(s.Home, home)
 }
 
+// GrokHome is the HOME the genuine grok binary sees for a Grok account:
+// the configured profile home, or the process home when none is configured.
+func GrokHome(s Spec, home string) string {
+	return ExpandHome(s.Home, home)
+}
+
+func isolateHome(values map[string]string, profile, home string) {
+	if values["AGY_REAL_HOME"] == "" {
+		values["AGY_REAL_HOME"] = values["HOME"]
+		if values["AGY_REAL_HOME"] == "" {
+			values["AGY_REAL_HOME"] = home
+		}
+	}
+	values["HOME"] = profile
+	values["XDG_CONFIG_HOME"] = filepath.Join(profile, ".config")
+	values["XDG_DATA_HOME"] = filepath.Join(profile, ".local", "share")
+	values["XDG_CACHE_HOME"] = filepath.Join(profile, ".cache")
+	values["XDG_STATE_HOME"] = filepath.Join(profile, ".local", "state")
+}
+
 // ClaudeDir expands the configured Claude directory without reading its contents.
 func ClaudeDir(s Spec, home string) string {
 	if s.ConfigDir == "" {
@@ -260,18 +289,11 @@ func Env(s Spec, home string, env []string) ([]string, error) {
 	} else if a.Tool == "agy" {
 		if s.Home != "" {
 			// Mirror the isolated-profile launcher: agy derives all state from HOME/XDG.
-			profile := AgyHome(s, home)
-			if values["AGY_REAL_HOME"] == "" {
-				values["AGY_REAL_HOME"] = values["HOME"]
-				if values["AGY_REAL_HOME"] == "" {
-					values["AGY_REAL_HOME"] = home
-				}
-			}
-			values["HOME"] = profile
-			values["XDG_CONFIG_HOME"] = filepath.Join(profile, ".config")
-			values["XDG_DATA_HOME"] = filepath.Join(profile, ".local", "share")
-			values["XDG_CACHE_HOME"] = filepath.Join(profile, ".cache")
-			values["XDG_STATE_HOME"] = filepath.Join(profile, ".local", "state")
+			isolateHome(values, AgyHome(s, home), home)
+		}
+	} else if a.Tool == "grok" {
+		if s.Home != "" {
+			isolateHome(values, GrokHome(s, home), home)
 		}
 	} else {
 		values["CODEX_HOME"] = CodexHome(s, home)
@@ -350,7 +372,7 @@ func Launch(s Spec, args []string, home string, env []string, dry bool, run Runn
 			return 1, errors.New("cannot create Codex home")
 		}
 	}
-	if a.Tool == "agy" && s.Home != "" {
+	if (a.Tool == "agy" || a.Tool == "grok") && s.Home != "" {
 		defer syscall.Umask(syscall.Umask(0o077))
 	}
 	if run == nil {
@@ -369,6 +391,20 @@ func TaskArgs(a Account, task string) []string {
 		return []string{"--prompt-interactive", task}
 	}
 	return []string{task}
+}
+
+// HeadlessArgs maps a routed task to the tool's non-interactive/print argv.
+func HeadlessArgs(a Account, task string) []string {
+	switch a.Tool {
+	case "claude", "grok":
+		return []string{"-p", task}
+	case "codex":
+		return []string{"exec", task}
+	case "agy":
+		return []string{"--print", task}
+	default:
+		return []string{task}
+	}
 }
 
 // Probe has no general command or prompt input. Implementations only receive account identities.
@@ -410,6 +446,18 @@ func (l Live) Status(ctx context.Context, spec Spec) Status {
 	timeout := l.Timeout
 	if timeout <= 0 {
 		timeout = 5 * time.Second
+	}
+	if a.Tool == "grok" {
+		if _, err := exec.LookPath("grok"); err != nil {
+			return fail("tool missing on PATH; install the genuine CLI")
+		}
+		info, err := os.Stat(filepath.Join(GrokHome(spec, l.Home), ".grok", "auth.json"))
+		ok := err == nil && info.Mode().IsRegular()
+		if err != nil && !os.IsNotExist(err) {
+			return fail("sign-in marker unreadable; check the profile directory")
+		}
+		s.LoginOK = &ok
+		return s
 	}
 	if a.Tool == "agy" {
 		// No prompt or subprocess: binary presence plus stored sign-in marker

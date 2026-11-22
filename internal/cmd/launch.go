@@ -20,6 +20,8 @@ func (a *App) launchFamily(c CLI, family string, accountFlag bool) int {
 		argv = c.Codex.Args
 	case "agy":
 		argv = c.Agy.Args
+	case "grok":
+		argv = c.Grok.Args
 	}
 	conf, err := a.loadConfig(c)
 	if err != nil {

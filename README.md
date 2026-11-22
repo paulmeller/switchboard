@@ -12,7 +12,8 @@ tools directly. It stores no credentials, proxies no traffic, and never
 equates a login with available credits. Linux and macOS are supported.
 
 ```sh
-sb 'fix the flaky parser test'    # pick family + least-used account and run
+sb 'fix the flaky parser test'    # pick family + least-used account and run interactively
+sb exec 'implement the parser'    # stripe headlessly onto a sub (claude -p / codex exec / agy --print)
 sb claude                         # balance Claude accounts by headroom
 sb codex personal -- --version    # pin codex/personal and pass args through
 ```
@@ -84,6 +85,7 @@ its own native mechanism — `sb` never reads or writes credential files:
 | `claude` | `claude/<name>` | `config_dir` -> `CLAUDE_CONFIG_DIR`, or `token_env` -> `CLAUDE_CODE_OAUTH_TOKEN` (strips `ANTHROPIC_API_KEY`) |
 | `codex` | `codex/<name>` | `home` -> `CODEX_HOME` (defaults to `~/.codex-<name>`) |
 | `agy` | `agy/<name>` | `home` -> isolated `HOME` + `XDG_*` dirs (or process `HOME` if omitted) |
+| `grok` | `grok/<name>` | `home` -> isolated `HOME` + `XDG_*` dirs (or process `HOME` if omitted) |
 
 ```toml
 [[tool_accounts]]
@@ -144,7 +146,18 @@ quota_pool = "shared-pool-id"
      so unused capacity isn't wasted.
    - Next come under-cap accounts ordered by most remaining headroom, then
      unknown-usage accounts, then exhausted accounts.
-4. **Cooldowns:** `sb` waits for the child process and forwards its exit code
+   - Exhausted/unavailable flat-rate subscriptions (`claude`, `codex`, `agy`)
+     never fall back to metered `grok` unless `allow_metered_fallback = true`
+     or `grok` is explicitly selected.
+4. **Headless & Grokbot MCP integration:**
+   - `sb exec "<task>"` runs the selected CLI non-interactively (`claude -p`,
+     `codex exec`, `agy --print`, or `grok -p`) so scripts and orchestrators
+     can stripe work across your flat-rate subscriptions instead of burning
+     metered API tokens.
+   - `sb mcp` runs a stdio MCP server exposing `sb_route`, `sb_exec`,
+     `sb_status`, `sb_usage`, and `sb_cooldown` for `grokbot` (add
+     `command = "sb"`, `args = ["mcp"]` to your MCP config).
+5. **Cooldowns:** `sb` waits for the child process and forwards its exit code
    without inspecting tool output. Report rate limits explicitly:
    ```sh
    sb cooldown codex/work --duration 1h
