@@ -21,6 +21,12 @@ sb codex personal -- --version    # pin codex/personal and pass args through
 
 ## Install
 
+**Homebrew** (macOS / Linux):
+
+```sh
+brew install paulmeller/tap/switchboard
+```
+
 **With Go (from a local clone):**
 
 ```sh
