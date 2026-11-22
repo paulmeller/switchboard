@@ -23,7 +23,7 @@ import (
 	"github.com/alecthomas/kong"
 )
 
-const Version = "0.1.0"
+const Version = "0.1.1"
 
 type Launch struct {
 	Args []string `arg:"" optional:"" sep:"none" help:"Optional configured profile (e.g. work, personal, or custom), then tool arguments (use --)."`
