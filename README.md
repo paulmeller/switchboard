@@ -3,12 +3,13 @@
 [![ci](https://github.com/paulmeller/switchboard/actions/workflows/ci.yml/badge.svg)](https://github.com/paulmeller/switchboard/actions/workflows/ci.yml)
 [![license](https://img.shields.io/badge/license-MIT-blue.svg)](LICENSE)
 
-**Launch the right coding CLI on the right account.**
+**Stripe requests across your AI coding subscriptions.**
 
-`sb` is a local Go CLI that picks among your existing `claude`, `codex`, and
-`agy` (Antigravity) logins and runs the genuine binary. It stores no
-credentials, proxies no traffic, and never equates a login with available
-credits. Linux and macOS are supported.
+If you juggle multiple Claude, Codex, and Antigravity subscriptions, `sb`
+stripes requests across them — sending each task to the right CLI and the
+account with the most headroom (or quota about to reset), using the genuine
+tools directly. It stores no credentials, proxies no traffic, and never
+equates a login with available credits. Linux and macOS are supported.
 
 ```sh
 sb 'fix the flaky parser test'    # pick family + least-used account and run
