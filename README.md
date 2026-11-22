@@ -117,6 +117,11 @@ quota_pool = "shared-pool-id"
   directory) or `token_env` (name of an exported env var).
 - **Custom `codex` profiles** accept `home` (defaulting to
   `~/.codex-<profile>`).
+- **Signing in:** Run `sb login <tool>/<profile>` (e.g. `sb login claude/client`,
+  `sb login codex/client`, `sb login agy/second`) to create the profile's
+  isolated directory and launch the genuine CLI's own login flow (`claude auth
+  login`, `codex login`, or `agy`). For `claude`, the profile must use
+  `config_dir`.
 - **Antigravity (`agy`)** uses one implicit `agy/personal` until you declare any
   `agy/...` entries. Accounts sharing a `quota_pool` share one allowance:
   automatic selection only ever considers the first configured member, so `sb`

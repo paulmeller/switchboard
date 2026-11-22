@@ -318,3 +318,92 @@ func TestDefaultFamilyAndStatusFallback(t *testing.T) {
 		}
 	}
 }
+
+func TestLoginCommand(t *testing.T) {
+	home := t.TempDir()
+	binDir := t.TempDir()
+	for _, tool := range []string{"claude", "codex", "agy"} {
+		if os.WriteFile(filepath.Join(binDir, tool), []byte("#!/bin/sh\nexit 0\n"), 0o700) != nil {
+			t.Fatal("fake binary")
+		}
+	}
+	cfgPath := filepath.Join(t.TempDir(), "config.toml")
+	os.WriteFile(cfgPath, []byte(`
+[[tool_accounts]]
+id = "claude/client"
+label = "Claude (client)"
+config_dir = "~/claude-client"
+[[tool_accounts]]
+id = "codex/client"
+label = "Codex (client)"
+home = "~/codex-client"
+[[tool_accounts]]
+id = "agy/second"
+label = "Antigravity (second)"
+home = "~/agy-second"
+`), 0o600)
+
+	var gotPath string
+	var gotArgs, gotEnv []string
+	execFn := func(path string, args, env []string) (int, error) {
+		gotPath, gotArgs, gotEnv = path, args, env
+		return 0, nil
+	}
+	newApp := func(out, diag *bytes.Buffer) *App {
+		return &App{Out: out, Err: diag, Home: home, Env: []string{"PATH=" + binDir, "SB_CONFIG=" + cfgPath}, Execute: execFn}
+	}
+
+	// Dry-run does not create directory or invoke Execute.
+	var out, diag bytes.Buffer
+	if newApp(&out, &diag).Run([]string{"--dry-run", "login", "claude/client"}) != 0 || gotPath != "" {
+		t.Fatal("dry-run login failed", diag.String())
+	}
+	if _, err := os.Stat(filepath.Join(home, "claude-client")); !os.IsNotExist(err) {
+		t.Fatal("dry-run created config_dir")
+	}
+
+	// Real claude login creates config_dir and invokes claude auth login.
+	out.Reset()
+	diag.Reset()
+	if newApp(&out, &diag).Run([]string{"login", "claude/client"}) != 0 {
+		t.Fatal("claude login failed", diag.String())
+	}
+	if len(gotArgs) != 2 || gotArgs[0] != "auth" || gotArgs[1] != "login" {
+		t.Fatal("unexpected claude args", gotArgs)
+	}
+	if info, err := os.Stat(filepath.Join(home, "claude-client")); err != nil || !info.IsDir() {
+		t.Fatal("claude config_dir not created")
+	}
+	hasConfigDir := false
+	for _, e := range gotEnv {
+		if e == "CLAUDE_CONFIG_DIR="+filepath.Join(home, "claude-client") {
+			hasConfigDir = true
+		}
+	}
+	if !hasConfigDir {
+		t.Fatal("missing CLAUDE_CONFIG_DIR", gotEnv)
+	}
+
+	// Codex login invokes codex login.
+	gotPath, gotArgs = "", nil
+	if newApp(&out, &diag).Run([]string{"login", "codex/client"}) != 0 || len(gotArgs) != 1 || gotArgs[0] != "login" {
+		t.Fatal("codex login failed", gotArgs, diag.String())
+	}
+
+	// Agy login creates home and invokes agy.
+	gotPath, gotArgs = "", nil
+	if newApp(&out, &diag).Run([]string{"login", "agy/second"}) != 0 || len(gotArgs) != 0 {
+		t.Fatal("agy login failed", gotArgs, diag.String())
+	}
+	if info, err := os.Stat(filepath.Join(home, "agy-second")); err != nil || !info.IsDir() {
+		t.Fatal("agy home not created")
+	}
+
+	// Claude without config_dir fails with exit 2.
+	cfgNoDir := filepath.Join(t.TempDir(), "nodir.toml")
+	os.WriteFile(cfgNoDir, []byte(""), 0o600)
+	a := App{Out: &out, Err: &diag, Home: home, Env: []string{"PATH=" + binDir, "SB_CONFIG=" + cfgNoDir}, Execute: execFn}
+	if a.Run([]string{"login", "claude/work"}) != 2 {
+		t.Fatal("expected exit 2 for token-based claude login")
+	}
+}

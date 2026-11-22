@@ -63,6 +63,9 @@ type CLI struct {
 		Account  string        `arg:"" help:"tool/profile"`
 		Duration time.Duration `help:"Local cooldown duration after a 429." default:"1h"`
 	} `cmd:"" help:"Explicitly report a local cooldown."`
+	Login struct {
+		Account string `arg:"" help:"Configured tool/profile (e.g. claude/client, codex/client, agy/second)."`
+	} `cmd:"" help:"Sign in to a configured account using the genuine CLI."`
 }
 type App struct {
 	Out, Err    io.Writer
@@ -94,7 +97,7 @@ func (a *App) value(k string) string {
 }
 func (a *App) fail(code int, msg string) int { fmt.Fprintln(a.Err, "sb: "+msg); return code }
 func normalize(args []string) []string {
-	known := map[string]bool{"feedback": true, "tune": true, "classify": true, "run": true, "status": true, "doctor": true, "usage": true, "schema": true, "claude": true, "codex": true, "agy": true, "cooldown": true}
+	known := map[string]bool{"feedback": true, "tune": true, "classify": true, "run": true, "status": true, "doctor": true, "usage": true, "schema": true, "claude": true, "codex": true, "agy": true, "cooldown": true, "login": true}
 	for i := 0; i < len(args); i++ {
 		v := args[i]
 		if v == "--config" || v == "--account" || v == "--classifier-provider" || v == "--classifier-base-url" || v == "--classifier-model" {
@@ -340,6 +343,9 @@ parsedVersion:
 		}
 		return a.launchFamily(c, name, explicit)
 	}
+	if name == "login" {
+		return a.loginAccount(c)
+	}
 	statePath := state.Path(a.Home, a.value("XDG_STATE_HOME"))
 	s, e := state.Load(statePath)
 	if e != nil {
@@ -533,6 +539,51 @@ parsedVersion:
 	}
 	fmt.Fprintln(a.Err, "sb: "+line)
 	return a.launchAndLog(c, conf, d, conf.Registry.Spec(pick), provider.TaskArgs(pick, c.Run.Task))
+}
+
+func (a *App) loginAccount(c CLI) int {
+	reg, err := a.registry(c)
+	if err != nil {
+		return a.fail(2, err.Error())
+	}
+	account, err := reg.Parse(c.Login.Account)
+	if err != nil {
+		return a.fail(2, err.Error())
+	}
+	spec := reg.Spec(account)
+	var loginArgs []string
+	switch account.Tool {
+	case "claude":
+		if spec.ConfigDir == "" {
+			return a.fail(2, "claude profile requires config_dir in [[tool_accounts]] for CLI-managed login")
+		}
+		if !c.DryRun {
+			if err := os.MkdirAll(provider.ClaudeDir(spec, a.Home), 0o700); err != nil {
+				return a.fail(1, "cannot create Claude config_dir")
+			}
+		}
+		loginArgs = []string{"auth", "login"}
+	case "codex":
+		loginArgs = []string{"login"}
+	case "agy":
+		if spec.Home != "" && !c.DryRun {
+			if err := os.MkdirAll(provider.AgyHome(spec, a.Home), 0o700); err != nil {
+				return a.fail(1, "cannot create Antigravity home")
+			}
+		}
+	}
+	if c.DryRun {
+		code, err := provider.Launch(spec, loginArgs, a.Home, a.Env, true, a.Execute)
+		if err != nil {
+			return a.fail(code, err.Error())
+		}
+		return a.emit(c, map[string]any{"account": account.ID(), "tool": account.Tool, "args": loginArgs, "dry_run": true}, []string{account.ID() + "\t" + strings.Join(append([]string{account.Tool}, loginArgs...), " ")})
+	}
+	code, err := provider.Launch(spec, loginArgs, a.Home, a.Env, false, a.Execute)
+	if err != nil {
+		return a.fail(code, err.Error())
+	}
+	return code
 }
 
 func schemaNode(n *kong.Node) map[string]any {
