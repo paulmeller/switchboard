@@ -202,7 +202,7 @@ func TestFeedbackAndTune(t *testing.T) {
 	if len(records) != 4 || records[3].DecisionID != id || records[3].Family != "claude" {
 		t.Fatal("feedback target or correction")
 	}
-	for _, args := range [][]string{{"feedback"}, {"feedback", "unknown", "--ok"}, {"feedback", "last"}, {"feedback", "last", "--family", "grok"}, {"feedback", "last", "--account", "codex"}, {"feedback", "last", "--family", "claude", "--account", "codex/work"}, {"feedback", "last", "--ok", "--family", "claude"}, {"feedback", "last", "--ok", "--account", "codex/personal"}} {
+	for _, args := range [][]string{{"feedback"}, {"feedback", "unknown", "--ok"}, {"feedback", "last"}, {"feedback", "last", "--family", "unknown"}, {"feedback", "last", "--account", "codex"}, {"feedback", "last", "--family", "claude", "--account", "codex/work"}, {"feedback", "last", "--ok", "--family", "claude"}, {"feedback", "last", "--ok", "--account", "codex/personal"}} {
 		if a.Run(args) != 2 {
 			t.Fatalf("accepted invalid feedback %v", args)
 		}

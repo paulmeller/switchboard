@@ -314,12 +314,23 @@ var (
 )
 
 type Grok struct {
-	Runner Runner
-	Env    []string
+	Runner   Runner
+	Env      []string
+	Home     string
+	Registry provider.Registry
 }
 
-func (s Grok) Read(ctx context.Context, _, _ string) (Data, error) {
-	_, err := s.Runner.Read(ctx, GrokUsage, s.Env)
+func (s Grok) Read(ctx context.Context, _, profile string) (Data, error) {
+	env := s.Env
+	if s.Registry != nil {
+		spec := s.Registry.Spec(provider.Account{Tool: "grok", Profile: profile})
+		if spec.Home != "" {
+			if mapped, err := provider.Env(spec, s.Home, s.Env); err == nil {
+				env = mapped
+			}
+		}
+	}
+	_, err := s.Runner.Read(ctx, GrokUsage, env)
 	if err != nil {
 		if ctx.Err() != nil {
 			return Data{}, ctx.Err()
@@ -356,5 +367,5 @@ func (s Sources) Timeout(tool string) time.Duration {
 
 func Live(home string, env []string, reg provider.Registry) Sources {
 	runner := Commands{}
-	return Sources{"codex": Codex{runner, home, env, reg}, "claude": Claude{Registry: reg, Runner: runner, Home: home, Env: env}, "grok": Grok{runner, env}, "agy": Agy{runner, home, env, reg}}
+	return Sources{"codex": Codex{runner, home, env, reg}, "claude": Claude{Registry: reg, Runner: runner, Home: home, Env: env}, "grok": Grok{Runner: runner, Env: env, Home: home, Registry: reg}, "agy": Agy{runner, home, env, reg}}
 }

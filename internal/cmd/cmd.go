@@ -23,7 +23,7 @@ import (
 	"github.com/alecthomas/kong"
 )
 
-const Version = "0.1.2"
+const Version = "0.1.3"
 
 type Launch struct {
 	Args []string `arg:"" optional:"" sep:"none" help:"Optional configured profile (e.g. work, personal, or custom), then tool arguments (use --)."`
@@ -73,6 +73,7 @@ type CLI struct {
 	} `cmd:"" help:"Sign in to a configured account using the genuine CLI."`
 }
 type App struct {
+	In          io.Reader
 	Out, Err    io.Writer
 	Home        string
 	Env         []string
@@ -88,7 +89,7 @@ func Main(args []string) int {
 		fmt.Fprintln(os.Stderr, "sb: cannot resolve home")
 		return 2
 	}
-	return (&App{Out: os.Stdout, Err: os.Stderr, Home: home, Env: os.Environ(), Execute: provider.Run}).Run(args)
+	return (&App{In: os.Stdin, Out: os.Stdout, Err: os.Stderr, Home: home, Env: os.Environ()}).Run(args)
 }
 
 func (a *App) value(k string) string {
@@ -205,7 +206,7 @@ parsedVersion:
 	background := context.Background()
 	if name == "schema" {
 		return a.emit(c, map[string]any{"schema_version": 1, "commands": schemaNode(p.Model.Node), "exit_codes": map[string]int{"success": 0, "failure": 1, "invalid_input": 2, "no_eligible_account": 3}, "decision_log_contract": decisionContract(), "classification_contract": map[string]string{"id": "decision UUID when successfully logged; otherwise omitted", "family": "launchable tool family", "candidates": "normalized status, cooldown and usage account candidates", "reason": "account selection explanation", "source": "jev|rules", "probability": "chosen family probability|null", "confidence": "Choice confidence|null", "difficulty": "0..2 when independently confident|null", "difficulty_confidence": "0..1|null", "jev": "raw normalized classification when valid", "why": "safe decision explanation"}, "usage_schema_version": 1, "usage_tool": "extensible string", "usage_contract": map[string]any{
-			"schema_version": 1, "row_count": "number of configured claude/codex/agy accounts + 2 (grok/cli, claude/plain)", "tool_accounts": "built-in claude/codex work/personal plus any configured claude/codex/agy entries in [[tool_accounts]]; agy uses configured accounts or implicit agy/personal", "row_timeout": "usage 5s and routing 2s per row; agy rows use 20s in both", "checked_at": "RFC3339 Australia/Sydney",
+			"schema_version": 1, "row_count": "number of configured claude/codex/agy/grok accounts + 1 (claude/plain)", "tool_accounts": "built-in claude/codex work/personal, implicit agy/personal and grok/cli, or configured per-tool entries in [[tool_accounts]]", "row_timeout": "usage 5s and routing 2s per row; agy rows use 20s in both", "checked_at": "RFC3339 Australia/Sydney",
 			"entry_keys": map[string]string{"tool": "extensible string", "profile": "string", "account": "string|null", "plan": "configured string|null", "login_ok": "boolean|null", "weekly_used_pct": "number 0..100|null", "weekly_resets_at": "RFC3339|null", "five_hour_used_pct": "number 0..100|null", "five_hour_resets_at": "RFC3339|null", "extra": "object", "source": "string|null", "error": "safe string|null", "checked_at": "RFC3339 UTC read/fetch time; cache rows use cache read time; error rows use attempt time"}, "sources": "live read-only Codex RPC, Claude login, Antigravity agy --output-format json --print /usage slash command, Grok usage; unsupported quotas null", "all_source_failure_exit": 1, "partial_success_exit": 0,
 		}, "precedence": []string{"flags", "environment", "config", "defaults"}}, []string{"sb schema --json"})
 	}
@@ -483,10 +484,10 @@ parsedVersion:
 				familyOrder = append(familyOrder, f)
 			}
 		}
-		// Antigravity /usage is slow; fetch it only when Antigravity is selected.
+		// Antigravity /usage is slow and Grok has no account-level quota; fetch only when selected.
 		needed := []provider.Status{}
 		for _, st := range statuses {
-			if (st.Tool != "agy" || family == "agy") && conf.Registry.Auto(st.Account) {
+			if (st.Tool != "agy" || family == "agy") && (st.Tool != "grok" || family == "grok") && conf.Registry.Auto(st.Account) {
 				needed = append(needed, st)
 			}
 		}
@@ -572,7 +573,7 @@ func (a *App) loginAccount(c CLI) int {
 		return a.fail(2, err.Error())
 	}
 	spec := reg.Spec(account)
-	var loginArgs []string
+	loginArgs := []string{}
 	switch account.Tool {
 	case "claude":
 		if spec.ConfigDir == "" {

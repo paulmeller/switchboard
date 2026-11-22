@@ -7,6 +7,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
 	"os"
 	"os/exec"
 	"os/signal"
@@ -197,8 +198,8 @@ func GrokHome(s Spec, home string) string {
 	return ExpandHome(s.Home, home)
 }
 
-func isolateHome(values map[string]string, profile, home string) {
-	if values["AGY_REAL_HOME"] == "" {
+func isolateHome(values map[string]string, tool, profile, home string) {
+	if tool == "agy" && values["AGY_REAL_HOME"] == "" {
 		values["AGY_REAL_HOME"] = values["HOME"]
 		if values["AGY_REAL_HOME"] == "" {
 			values["AGY_REAL_HOME"] = home
@@ -289,11 +290,11 @@ func Env(s Spec, home string, env []string) ([]string, error) {
 	} else if a.Tool == "agy" {
 		if s.Home != "" {
 			// Mirror the isolated-profile launcher: agy derives all state from HOME/XDG.
-			isolateHome(values, AgyHome(s, home), home)
+			isolateHome(values, "agy", AgyHome(s, home), home)
 		}
 	} else if a.Tool == "grok" {
 		if s.Home != "" {
-			isolateHome(values, GrokHome(s, home), home)
+			isolateHome(values, "grok", GrokHome(s, home), home)
 		}
 	} else {
 		values["CODEX_HOME"] = CodexHome(s, home)
@@ -308,43 +309,50 @@ func Env(s Spec, home string, env []string) ([]string, error) {
 
 type Runner func(string, []string, []string) (int, error)
 
-func Run(path string, args, env []string) (int, error) {
-	c := exec.Command(path, args...)
-	c.Env, c.Stdin, c.Stdout, c.Stderr = env, os.Stdin, os.Stdout, os.Stderr
-	signals := make(chan os.Signal, 8)
-	signal.Notify(signals, syscall.SIGINT, syscall.SIGQUIT, syscall.SIGTERM, syscall.SIGHUP)
-	defer signal.Stop(signals)
-	if err := c.Start(); err != nil {
+// RunWithIO returns a Runner bound to explicit stdio streams (for headless/MCP).
+func RunWithIO(in io.Reader, out, errOut io.Writer) Runner {
+	return func(path string, args, env []string) (int, error) {
+		c := exec.Command(path, args...)
+		c.Env, c.Stdin, c.Stdout, c.Stderr = env, in, out, errOut
+		signals := make(chan os.Signal, 8)
+		signal.Notify(signals, syscall.SIGINT, syscall.SIGQUIT, syscall.SIGTERM, syscall.SIGHUP)
+		defer signal.Stop(signals)
+		if err := c.Start(); err != nil {
+			return 1, err
+		}
+		done := make(chan struct{})
+		stopped := make(chan struct{})
+		go func() {
+			defer close(stopped)
+			for {
+				select {
+				case sig := <-signals:
+					if sig == syscall.SIGTERM || sig == syscall.SIGHUP {
+						_ = c.Process.Signal(sig)
+					}
+				case <-done:
+					return
+				}
+			}
+		}()
+		err := c.Wait()
+		close(done)
+		<-stopped
+		if err == nil {
+			return 0, nil
+		}
+		if e, ok := err.(*exec.ExitError); ok {
+			if status, ok := e.Sys().(syscall.WaitStatus); ok && status.Signaled() {
+				return 128 + int(status.Signal()), nil
+			}
+			return e.ExitCode(), nil
+		}
 		return 1, err
 	}
-	done := make(chan struct{})
-	stopped := make(chan struct{})
-	go func() {
-		defer close(stopped)
-		for {
-			select {
-			case sig := <-signals:
-				if sig == syscall.SIGTERM || sig == syscall.SIGHUP {
-					_ = c.Process.Signal(sig)
-				}
-			case <-done:
-				return
-			}
-		}
-	}()
-	err := c.Wait()
-	close(done)
-	<-stopped
-	if err == nil {
-		return 0, nil
-	}
-	if e, ok := err.(*exec.ExitError); ok {
-		if status, ok := e.Sys().(syscall.WaitStatus); ok && status.Signaled() {
-			return 128 + int(status.Signal()), nil
-		}
-		return e.ExitCode(), nil
-	}
-	return 1, err
+}
+
+func Run(path string, args, env []string) (int, error) {
+	return RunWithIO(os.Stdin, os.Stdout, os.Stderr)(path, args, env)
 }
 
 func Launch(s Spec, args []string, home string, env []string, dry bool, run Runner) (int, error) {

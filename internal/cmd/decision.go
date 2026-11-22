@@ -48,7 +48,7 @@ func (a *App) localReport(c CLI, name string) int {
 	if !f.OK && f.Family == "" && f.Account == "" {
 		return a.fail(2, "feedback requires --ok, --family or --account")
 	}
-	if f.Family != "" && f.Family != "claude" && f.Family != "codex" && f.Family != "agy" {
+	if f.Family != "" && f.Family != "claude" && f.Family != "codex" && f.Family != "agy" && f.Family != "grok" {
 		return a.fail(2, "invalid feedback family")
 	}
 	if f.Account != "" {

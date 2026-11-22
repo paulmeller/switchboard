@@ -322,6 +322,7 @@ func TestDefaultFamilyAndStatusFallback(t *testing.T) {
 func TestLoginCommand(t *testing.T) {
 	home := t.TempDir()
 	binDir := t.TempDir()
+	t.Setenv("PATH", binDir)
 	for _, tool := range []string{"claude", "codex", "agy"} {
 		if os.WriteFile(filepath.Join(binDir, tool), []byte("#!/bin/sh\nexit 0\n"), 0o700) != nil {
 			t.Fatal("fake binary")

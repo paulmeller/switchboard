@@ -33,7 +33,7 @@ func ratio(correct, n int) *float64 {
 }
 
 func Tune(records []Decision) Report {
-	r := Report{SchemaVersion: 1, Families: []Accuracy{{Family: "claude"}, {Family: "codex"}, {Family: "agy"}}, Floors: []Floor{}}
+	r := Report{SchemaVersion: 1, Families: []Accuracy{{Family: "claude"}, {Family: "codex"}, {Family: "agy"}, {Family: "grok"}}, Floors: []Floor{}}
 	labels := map[string]Label{}
 	for _, d := range records {
 		if d.Type == "decision" && d.Label != nil {

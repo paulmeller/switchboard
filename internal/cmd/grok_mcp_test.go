@@ -12,6 +12,7 @@ import (
 func TestExecHeadlessAndMeteredFallback(t *testing.T) {
 	home := t.TempDir()
 	binDir := t.TempDir()
+	t.Setenv("PATH", binDir)
 	for _, tool := range []string{"claude", "codex", "agy", "grok"} {
 		if os.WriteFile(filepath.Join(binDir, tool), []byte("#!/bin/sh\nexit 0\n"), 0o700) != nil {
 			t.Fatal("fake binary")
@@ -63,6 +64,7 @@ func TestExecHeadlessAndMeteredFallback(t *testing.T) {
 func TestMCPServe(t *testing.T) {
 	home := t.TempDir()
 	binDir := t.TempDir()
+	t.Setenv("PATH", binDir)
 	for _, tool := range []string{"claude", "codex", "agy", "grok"} {
 		os.WriteFile(filepath.Join(binDir, tool), []byte("#!/bin/sh\nexit 0\n"), 0o700)
 	}
@@ -91,19 +93,7 @@ func TestMCPServe(t *testing.T) {
 		`{"jsonrpc":"2.0","id":4,"method":"tools/call","params":{"name":"sb_exec","arguments":{"task":"implement parser"}}}`,
 	}, "\n") + "\n"
 
-	// Swap os.Stdin temporarily for serveMCP.
-	r, w, err := os.Pipe()
-	if err != nil {
-		t.Fatal(err)
-	}
-	oldStdin := os.Stdin
-	os.Stdin = r
-	defer func() { os.Stdin = oldStdin }()
-	go func() {
-		_, _ = w.WriteString(reqs)
-		_ = w.Close()
-	}()
-
+	a.In = strings.NewReader(reqs)
 	var out, diag bytes.Buffer
 	a.Out, a.Err = &out, &diag
 	if a.Run([]string{"mcp"}) != 0 {

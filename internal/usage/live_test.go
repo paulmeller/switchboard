@@ -116,7 +116,7 @@ func TestSourceAllowlistAndIsolation(t *testing.T) {
 	if !reflect.DeepEqual(dirs, []string{"CLAUDE_CONFIG_DIR=/fake/.local/share/claude-usage/work", "CLAUDE_CONFIG_DIR=/fake/.local/share/claude-usage/personal", "CLAUDE_CONFIG_DIR=/fake/.claude"}) {
 		t.Fatal("isolated config dirs")
 	}
-	(Grok{runner, nil}).Read(context.Background(), "grok", "cli")
+	(Grok{Runner: runner}).Read(context.Background(), "grok", "cli")
 	if !reflect.DeepEqual(calls, []Operation{ClaudeLogin, ClaudeLogin, ClaudeLogin, GrokUsage}) {
 		t.Fatal("unexpected operation")
 	}
@@ -185,7 +185,7 @@ func TestLiveCollectionTimeoutAndPartial(t *testing.T) {
 		}
 		return nil, errors.New("private diagnostic")
 	})
-	sources := Sources{"codex": Codex{Runner: runner, Home: "/fake"}, "claude": Claude{nil, runner, "/fake", nil}, "grok": Grok{runner, nil}}
+	sources := Sources{"codex": Codex{Runner: runner, Home: "/fake"}, "claude": Claude{nil, runner, "/fake", nil}, "grok": Grok{Runner: runner}}
 	report, code := Collect(context.Background(), sources, provider.NewRegistry(nil), 5*time.Millisecond, time.Now())
 	if code != 0 || len(report.Accounts) != 7 || report.SchemaVersion != 1 {
 		t.Fatal("partial success contract")

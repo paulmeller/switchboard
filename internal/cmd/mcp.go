@@ -5,8 +5,9 @@ import (
 	"bytes"
 	"encoding/json"
 	"fmt"
-	"io"
 	"os"
+
+	"switchboard/internal/provider"
 )
 
 type mcpRequest struct {
@@ -17,7 +18,10 @@ type mcpRequest struct {
 }
 
 func (a *App) serveMCP(c CLI) int {
-	in := io.Reader(os.Stdin)
+	in := a.In
+	if in == nil {
+		in = os.Stdin
+	}
 	scanner := bufio.NewScanner(in)
 	scanner.Buffer(make([]byte, 4096), 1024*1024)
 	enc := json.NewEncoder(a.Out)
@@ -27,7 +31,11 @@ func (a *App) serveMCP(c CLI) int {
 			continue
 		}
 		var req mcpRequest
-		if json.Unmarshal(line, &req) != nil || req.Method == "" {
+		if json.Unmarshal(line, &req) != nil {
+			_ = enc.Encode(map[string]any{"jsonrpc": "2.0", "id": nil, "error": map[string]any{"code": -32700, "message": "parse error"}})
+			continue
+		}
+		if req.Method == "" {
 			if len(req.ID) > 0 && string(req.ID) != "null" {
 				_ = enc.Encode(map[string]any{"jsonrpc": "2.0", "id": req.ID, "error": map[string]any{"code": -32600, "message": "invalid request"}})
 			}
@@ -64,6 +72,10 @@ func (a *App) serveMCP(c CLI) int {
 		if enc.Encode(resp) != nil {
 			return 1
 		}
+	}
+	if err := scanner.Err(); err != nil {
+		fmt.Fprintln(a.Err, "sb: mcp read error")
+		return 1
 	}
 	return 0
 }
@@ -127,39 +139,64 @@ func (a *App) callMCPTool(c CLI, raw json.RawMessage) (any, map[string]any) {
 	if json.Unmarshal(raw, &call) != nil {
 		return nil, map[string]any{"code": -32602, "message": "invalid params"}
 	}
-	str := func(k string) string {
-		if v, ok := call.Arguments[k].(string); ok {
-			return v
+	str := func(k string) (string, bool) {
+		v, exists := call.Arguments[k]
+		if !exists || v == nil {
+			return "", true
 		}
-		return ""
+		s, ok := v.(string)
+		return s, ok
 	}
 	var out, diag bytes.Buffer
 	sub := *a
 	sub.Out, sub.Err = &out, &diag
+	if sub.Execute == nil {
+		// Isolate headless child stdio from the MCP JSON-RPC stream.
+		sub.Execute = provider.RunWithIO(bytes.NewReader(nil), &out, &diag)
+	}
 	args := []string{}
 	if c.Config != "" {
 		args = append(args, "--config", c.Config)
 	}
+	if c.NoLog {
+		args = append(args, "--no-log")
+	}
 	switch call.Name {
 	case "sb_route":
-		if str("account") != "" {
-			args = append(args, "--account", str("account"))
+		task, ok1 := str("task")
+		acct, ok2 := str("account")
+		if !ok1 || !ok2 || task == "" {
+			return nil, map[string]any{"code": -32602, "message": "invalid params"}
 		}
-		args = append(args, "--dry-run", "--json", "run", str("task"))
+		if acct != "" {
+			args = append(args, "--account="+acct)
+		}
+		args = append(args, "--dry-run", "--json", "run", "--", task)
 	case "sb_exec":
-		if str("account") != "" {
-			args = append(args, "--account", str("account"))
+		task, ok1 := str("task")
+		acct, ok2 := str("account")
+		if !ok1 || !ok2 || task == "" {
+			return nil, map[string]any{"code": -32602, "message": "invalid params"}
 		}
-		args = append(args, "exec", str("task"))
+		if acct != "" {
+			args = append(args, "--account="+acct)
+		}
+		args = append(args, "exec", "--", task)
 	case "sb_status":
 		args = append(args, "--json", "status")
 	case "sb_usage":
 		args = append(args, "--json", "usage")
 	case "sb_cooldown":
-		args = append(args, "--json", "cooldown", str("account"))
-		if d := str("duration"); d != "" {
-			args = append(args, "--duration", d)
+		acct, ok1 := str("account")
+		dur, ok2 := str("duration")
+		if !ok1 || !ok2 || acct == "" {
+			return nil, map[string]any{"code": -32602, "message": "invalid params"}
 		}
+		args = append(args, "--json", "cooldown")
+		if dur != "" {
+			args = append(args, "--duration="+dur)
+		}
+		args = append(args, "--", acct)
 	default:
 		return nil, map[string]any{"code": -32602, "message": "unknown tool"}
 	}
