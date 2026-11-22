@@ -417,10 +417,21 @@ func (l Live) Status(ctx context.Context, spec Spec) Status {
 		if _, err := exec.LookPath("agy"); err != nil {
 			return fail("tool missing on PATH; install the genuine CLI")
 		}
-		info, err := os.Stat(AgyLoginMarker(AgyHome(spec, l.Home)))
-		ok := err == nil && info.Mode().IsRegular()
-		if err != nil && !os.IsNotExist(err) {
-			return fail("sign-in marker unreadable; check the profile directory")
+		accountHome := AgyHome(spec, l.Home)
+		markers := []string{
+			AgyLoginMarker(accountHome),
+			filepath.Join(accountHome, ".gemini", "antigravity-cli", "jetski_state.pbtxt"),
+		}
+		ok := false
+		for _, marker := range markers {
+			info, err := os.Stat(marker)
+			if err == nil && info.Mode().IsRegular() {
+				ok = true
+				break
+			}
+			if err != nil && !os.IsNotExist(err) {
+				return fail("sign-in marker unreadable; check the profile directory")
+			}
 		}
 		s.LoginOK = &ok
 		return s
