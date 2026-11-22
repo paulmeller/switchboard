@@ -77,11 +77,11 @@ sb 'implement the parser'
 Each tool isolates profiles using its own native mechanism — `sb` never reads
 or writes credential files:
 
-| Tool | Built-in profiles | How profiles isolate |
-|---|---|---|
-| `claude` | `work`, `personal` | `CLAUDE_OAUTH_TOKEN_1`/`2` -> `CLAUDE_CODE_OAUTH_TOKEN` (strips `ANTHROPIC_API_KEY`), or `config_dir` -> `CLAUDE_CONFIG_DIR` |
-| `codex` | `work`, `personal` | `CODEX_HOME` (`~/.codex`, `~/.codex-personal`, or custom `home`) |
-| `agy` | `personal` (implicit) | Process `HOME`, or isolated `HOME` + `XDG_*` dirs when `home` is set |
+| Tool | Default profiles | Custom profiles (`[[tool_accounts]]`) | How profiles isolate |
+|---|---|---|---|
+| `claude` | `work`, `personal` | Any `claude/<name>` | `token_env` (or `CLAUDE_OAUTH_TOKEN_1`/`2`) -> `CLAUDE_CODE_OAUTH_TOKEN` (strips `ANTHROPIC_API_KEY`), or `config_dir` -> `CLAUDE_CONFIG_DIR` |
+| `codex` | `work`, `personal` | Any `codex/<name>` | `CODEX_HOME` (`~/.codex`, `~/.codex-personal`, `~/.codex-<name>`, or custom `home`) |
+| `agy` | `personal` (implicit) | Any `agy/<name>` | Process `HOME`, or isolated `HOME` + `XDG_*` dirs when `home` is set |
 
 You can add arbitrary profiles or override defaults in
 `$XDG_CONFIG_HOME/switchboard/config.toml` (default
