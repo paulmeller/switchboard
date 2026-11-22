@@ -332,8 +332,8 @@ home = "~/codex-client"
 	if err != nil {
 		t.Fatal(err)
 	}
-	if len(c.Registry) != 7 {
-		t.Fatalf("expected 7 accounts, got %d", len(c.Registry))
+	if len(c.Registry) != 3 {
+		t.Fatalf("expected 3 accounts (claude/client, codex/client, agy/personal), got %d", len(c.Registry))
 	}
 	claudeSpec, ok := c.Registry.Lookup(provider.Account{Tool: "claude", Profile: "client"})
 	if !ok || claudeSpec.TokenEnv != "CLAUDE_OAUTH_TOKEN_CLIENT" || claudeSpec.Plan != "Max" {

@@ -71,53 +71,36 @@ func DefaultAgy() Spec {
 	return Spec{Account: Account{"agy", "personal"}, Label: "Antigravity"}
 }
 
-// Registry is the ordered set of launch accounts: built-in Claude/Codex first
-// (with any matching config overlays), followed by any additional configured
-// Claude/Codex profiles, then configured Antigravity accounts (or the implicit default).
+// Registry is the ordered set of launch accounts: configured accounts for each
+// tool (claude, codex, agy) in config order, or that tool's implicit defaults
+// when none are configured for it.
 type Registry []Spec
 
 func NewRegistry(specs []Spec) Registry {
-	builtIn := map[Account]bool{}
-	for _, a := range Accounts() {
-		builtIn[a] = true
-	}
-	extraClaude := []Spec{}
-	extraCodex := []Spec{}
-	agy := []Spec{}
+	byTool := map[string][]Spec{}
 	for _, s := range specs {
-		switch s.Tool {
-		case "claude":
-			if !builtIn[s.Account] {
-				extraClaude = append(extraClaude, s)
-			}
-		case "codex":
-			if !builtIn[s.Account] {
-				extraCodex = append(extraCodex, s)
-			}
-		case "agy":
-			agy = append(agy, s)
+		byTool[s.Tool] = append(byTool[s.Tool], s)
+	}
+	if len(byTool["claude"]) == 0 {
+		byTool["claude"] = []Spec{
+			{Account: Account{"claude", "work"}},
+			{Account: Account{"claude", "personal"}},
 		}
 	}
-	r := Registry{}
-	for _, a := range Accounts() {
-		s := Spec{Account: a}
-		for _, configured := range specs {
-			if configured.Account == a {
-				s = configured
-			}
-		}
-		r = append(r, s)
-		if a.Tool == "claude" && a.Profile == "personal" {
-			r = append(r, extraClaude...)
-		}
-		if a.Tool == "codex" && a.Profile == "personal" {
-			r = append(r, extraCodex...)
+	if len(byTool["codex"]) == 0 {
+		byTool["codex"] = []Spec{
+			{Account: Account{"codex", "work"}},
+			{Account: Account{"codex", "personal"}},
 		}
 	}
-	if len(agy) == 0 {
-		agy = []Spec{DefaultAgy()}
+	if len(byTool["agy"]) == 0 {
+		byTool["agy"] = []Spec{DefaultAgy()}
 	}
-	return append(r, agy...)
+	r := make(Registry, 0, len(byTool["claude"])+len(byTool["codex"])+len(byTool["agy"]))
+	r = append(r, byTool["claude"]...)
+	r = append(r, byTool["codex"]...)
+	r = append(r, byTool["agy"]...)
+	return r
 }
 
 func (r Registry) Accounts() []Account {

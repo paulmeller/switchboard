@@ -83,7 +83,10 @@ or writes credential files:
 | `codex` | `work`, `personal` | Any `codex/<name>` | `CODEX_HOME` (`~/.codex`, `~/.codex-personal`, `~/.codex-<name>`, or custom `home`) |
 | `agy` | `personal` (implicit) | Any `agy/<name>` | Process `HOME`, or isolated `HOME` + `XDG_*` dirs when `home` is set |
 
-You can add arbitrary profiles or override defaults in
+With no `[[tool_accounts]]`, `sb` falls back to those implicit defaults so it
+works out of the box. Declaring any `[[tool_accounts]]` for a tool (`claude`,
+`codex`, or `agy`) **replaces** that tool's implicit defaults with your
+configured list in
 `$XDG_CONFIG_HOME/switchboard/config.toml` (default
 `~/.config/switchboard/config.toml` — see
 [config.example.toml](config.example.toml)):
