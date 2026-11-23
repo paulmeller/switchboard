@@ -6,6 +6,7 @@ import (
 	"io"
 	"os"
 	"os/exec"
+	"path/filepath"
 	"runtime"
 	"strings"
 	"time"
@@ -23,7 +24,7 @@ import (
 	"github.com/alecthomas/kong"
 )
 
-const Version = "0.1.3"
+const Version = "0.1.4"
 
 type Launch struct {
 	Args []string `arg:"" optional:"" sep:"none" help:"Optional configured profile (e.g. work, personal, or custom), then tool arguments (use --)."`
@@ -71,6 +72,9 @@ type CLI struct {
 	Login struct {
 		Account string `arg:"" help:"Configured tool/profile (e.g. claude/client, codex/client, agy/second)."`
 	} `cmd:"" help:"Sign in to a configured account using the genuine CLI."`
+	Statusline struct {
+		Profile string `arg:"" optional:"" help:"Optional Claude profile name (defaults to SB_ACTIVE_ACCOUNT, matching CLAUDE_CONFIG_DIR, or plain)."`
+	} `cmd:"" help:"Read Claude Code statusLine JSON from stdin and record normalized rate-limit snapshots."`
 }
 type App struct {
 	In          io.Reader
@@ -103,7 +107,7 @@ func (a *App) value(k string) string {
 }
 func (a *App) fail(code int, msg string) int { fmt.Fprintln(a.Err, "sb: "+msg); return code }
 func normalize(args []string) []string {
-	known := map[string]bool{"feedback": true, "tune": true, "classify": true, "run": true, "exec": true, "mcp": true, "status": true, "doctor": true, "usage": true, "schema": true, "claude": true, "codex": true, "agy": true, "grok": true, "cooldown": true, "login": true}
+	known := map[string]bool{"feedback": true, "tune": true, "classify": true, "run": true, "exec": true, "mcp": true, "status": true, "doctor": true, "usage": true, "schema": true, "claude": true, "codex": true, "agy": true, "grok": true, "cooldown": true, "login": true, "statusline": true}
 	for i := 0; i < len(args); i++ {
 		v := args[i]
 		if v == "--config" || v == "--account" || v == "--classifier-provider" || v == "--classifier-base-url" || v == "--classifier-model" {
@@ -360,6 +364,9 @@ parsedVersion:
 	if name == "login" {
 		return a.loginAccount(c)
 	}
+	if name == "statusline" {
+		return a.recordStatusline(c)
+	}
 	statePath := state.Path(a.Home, a.value("XDG_STATE_HOME"))
 	s, e := state.Load(statePath)
 	if e != nil {
@@ -612,6 +619,61 @@ func (a *App) loginAccount(c CLI) int {
 		return a.fail(code, err.Error())
 	}
 	return code
+}
+
+func (a *App) recordStatusline(c CLI) int {
+	in := a.In
+	if in == nil {
+		in = os.Stdin
+	}
+	raw, err := io.ReadAll(io.LimitReader(in, 1024*1024))
+	if err != nil {
+		return a.fail(1, "cannot read statusline input")
+	}
+	profile := "plain"
+	if c.Account != "" {
+		reg, err := a.registry(c)
+		if err != nil {
+			return a.fail(2, err.Error())
+		}
+		account, err := reg.Parse(c.Account)
+		if err != nil || account.Tool != "claude" {
+			return a.fail(2, "--account must name a configured claude/<profile>")
+		}
+		profile = account.Profile
+	} else if c.Statusline.Profile != "" {
+		reg, err := a.registry(c)
+		if err != nil {
+			return a.fail(2, err.Error())
+		}
+		if _, ok := reg.Lookup(provider.Account{Tool: "claude", Profile: c.Statusline.Profile}); !ok && c.Statusline.Profile != "plain" {
+			return a.fail(2, "unknown claude profile")
+		}
+		profile = c.Statusline.Profile
+	} else if active := a.value("SB_ACTIVE_ACCOUNT"); strings.HasPrefix(active, "claude/") {
+		profile = strings.TrimPrefix(active, "claude/")
+	} else if cfgDir := a.value("CLAUDE_CONFIG_DIR"); cfgDir != "" {
+		if reg, err := a.registry(c); err == nil {
+			for _, spec := range reg {
+				if spec.Tool == "claude" && spec.ConfigDir != "" && provider.ClaudeDir(spec, a.Home) == cfgDir {
+					profile = spec.Profile
+					break
+				}
+			}
+		}
+	}
+	data, err := usage.ParseStatusline(raw, time.Now())
+	if err != nil {
+		// Non-rate-limit statusLine payloads (e.g. initial tick) are a harmless no-op.
+		return 0
+	}
+	if !c.DryRun {
+		path := filepath.Join(usage.SnapshotDir(a.Home, a.value("XDG_STATE_HOME")), "claude-"+profile+".json")
+		if err := state.SaveJSON(path, data); err != nil {
+			return a.fail(1, "cannot save statusline snapshot")
+		}
+	}
+	return 0
 }
 
 func schemaNode(n *kong.Node) map[string]any {

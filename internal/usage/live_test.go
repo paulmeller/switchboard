@@ -108,7 +108,7 @@ func TestSourceAllowlistAndIsolation(t *testing.T) {
 		return nil, errors.New("private failure")
 	})
 	for _, profile := range []string{"work", "personal", "plain"} {
-		d, e := (Claude{nil, runner, "/fake", []string{"CLAUDE_CODE_OAUTH_TOKEN=fixture", "ANTHROPIC_API_KEY=fixture", "CLAUDE_OAUTH_TOKEN_1=fixture"}}).Read(context.Background(), "claude", profile)
+		d, e := (Claude{Runner: runner, Home: "/fake", Env: []string{"CLAUDE_CODE_OAUTH_TOKEN=fixture", "ANTHROPIC_API_KEY=fixture", "CLAUDE_OAUTH_TOKEN_1=fixture"}}).Read(context.Background(), "claude", profile)
 		if e != nil || d.LoginOK == nil || *d.LoginOK || d.Weekly != nil || d.Notice == "" {
 			t.Fatal("Claude login only")
 		}
@@ -185,7 +185,7 @@ func TestLiveCollectionTimeoutAndPartial(t *testing.T) {
 		}
 		return nil, errors.New("private diagnostic")
 	})
-	sources := Sources{"codex": Codex{Runner: runner, Home: "/fake"}, "claude": Claude{nil, runner, "/fake", nil}, "grok": Grok{Runner: runner}}
+	sources := Sources{"codex": Codex{Runner: runner, Home: "/fake"}, "claude": Claude{Runner: runner, Home: "/fake"}, "grok": Grok{Runner: runner}}
 	report, code := Collect(context.Background(), sources, provider.NewRegistry(nil), 5*time.Millisecond, time.Now())
 	if code != 0 || len(report.Accounts) != 7 || report.SchemaVersion != 1 {
 		t.Fatal("partial success contract")
@@ -226,7 +226,7 @@ func TestClaudeSignedOutTransport(t *testing.T) {
 		if err := os.WriteFile(filepath.Join(dir, "claude"), []byte(script), 0o700); err != nil {
 			t.Fatal(err)
 		}
-		source := Sources{"claude": Claude{nil, Commands{}, dir, []string{"PATH=" + dir}}}
+		source := Sources{"claude": Claude{Runner: Commands{}, Home: dir, Env: []string{"PATH=" + dir}}}
 		report, code := Collect(context.Background(), source, provider.NewRegistry(nil), time.Second, time.Now())
 		row := report.Accounts[6]
 		if tc.ok {
@@ -292,5 +292,26 @@ func TestClaudeConfiguredUsageEnv(t *testing.T) {
 	data, err := (Claude{Registry: reg, Runner: runner, Home: home, Env: []string{"CLAUDE_OAUTH_TOKEN_1=fixture"}}).Read(context.Background(), "claude", "work")
 	if err != nil || !called || data.LoginOK == nil || !*data.LoginOK || data.Weekly != nil || data.Five != nil || data.Notice != "quota unavailable; no safe noninteractive Claude usage source (only interactive /usage)" {
 		t.Fatal("configured usage result")
+	}
+}
+
+func TestClaudeStatuslineSnapshot(t *testing.T) {
+	home := t.TempDir()
+	snapDir := filepath.Join(home, "snapshots")
+	raw := []byte(`{"rate_limits":{"five_hour":{"used_percentage":23.5,"resets_at":1800000100},"seven_day":{"used_percentage":41.2,"resets_at":1800000000}}}`)
+	d, err := ParseStatusline(raw, time.Now())
+	if err != nil || *d.Five != 23.5 || *d.Weekly != 41.2 || d.FiveReset == nil || d.WeeklyReset == nil {
+		t.Fatal("ParseStatusline failed", d, err)
+	}
+	os.MkdirAll(snapDir, 0o700)
+	b, _ := json.Marshal(d)
+	os.WriteFile(filepath.Join(snapDir, "claude-work.json"), b, 0o600)
+
+	runner := readFunc(func(context.Context, Operation, []string) ([]byte, error) {
+		return []byte(`{"loggedIn":false}`), nil
+	})
+	got, err := (Claude{Registry: provider.NewRegistry(nil), Runner: runner, Home: home, SnapshotDir: snapDir}).Read(context.Background(), "claude", "work")
+	if err != nil || got.Source != "claude statusline snapshot" || *got.Weekly != 41.2 || *got.Five != 23.5 || got.Notice != "" {
+		t.Fatalf("expected statusline snapshot merge, got %+v err=%v", got, err)
 	}
 }

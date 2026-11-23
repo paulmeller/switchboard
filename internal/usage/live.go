@@ -244,10 +244,11 @@ type window struct {
 }
 
 type Claude struct {
-	Registry provider.Registry
-	Runner   Runner
-	Home     string
-	Env      []string
+	Registry    provider.Registry
+	Runner      Runner
+	Home        string
+	Env         []string
+	SnapshotDir string
 }
 
 func (s Claude) Read(ctx context.Context, _, profile string) (Data, error) {
@@ -259,20 +260,65 @@ func (s Claude) Read(ctx context.Context, _, profile string) (Data, error) {
 	if spec.ConfigDir != "" {
 		dir = provider.ClaudeDir(spec, s.Home)
 	}
+	var snap Data
+	var hasSnap bool
+	if s.SnapshotDir != "" {
+		if got, snapErr := (Snapshot{Dir: s.SnapshotDir}).Read(ctx, "claude", profile); snapErr == nil && valid(got, time.Now()) && (got.Weekly != nil || got.Five != nil) {
+			snap, hasSnap = got, true
+		}
+	}
 	env := mappedEnv(s.Env, "CLAUDE_CONFIG_DIR", dir, spec.TokenEnv)
 	raw, err := s.Runner.Read(ctx, ClaudeLogin, env)
 	if err != nil {
+		if hasSnap {
+			return snapshotData(snap), nil
+		}
 		return Data{}, err
 	}
 	loggedIn, err := claudeLogin(raw)
 	if err != nil {
+		if hasSnap {
+			return snapshotData(snap), nil
+		}
 		return Data{}, err
+	}
+	if hasSnap {
+		d := snapshotData(snap)
+		if *loggedIn {
+			d.LoginOK = loggedIn
+		}
+		return d, nil
 	}
 	notice := "quota unavailable; no safe noninteractive Claude usage source (only interactive /usage)"
 	if profile == "plain" {
 		notice = "login-only source; quota not reported"
 	}
 	return Data{ObservedAt: time.Now(), LoginOK: loggedIn, Source: "live claude auth status (isolated config)", Notice: notice}, nil
+}
+
+func snapshotData(snap Data) Data {
+	age := int64(time.Since(snap.ObservedAt).Seconds())
+	if age < 0 {
+		age = 0
+	}
+	yes := true
+	login := snap.LoginOK
+	if login == nil {
+		login = &yes
+	}
+	return Data{
+		ObservedAt:  snap.ObservedAt,
+		LoginOK:     login,
+		Weekly:      snap.Weekly,
+		WeeklyReset: snap.WeeklyReset,
+		Five:        snap.Five,
+		FiveReset:   snap.FiveReset,
+		Source:      "claude statusline snapshot",
+		Extra: map[string]any{
+			"observed_at": sydneyTime(snap.ObservedAt),
+			"age_seconds": age,
+		},
+	}
 }
 
 func claudeLogin(raw []byte) (*bool, error) {
@@ -365,7 +411,18 @@ func (s Sources) Timeout(tool string) time.Duration {
 	return 0
 }
 
+func lookupEnvValue(env []string, key string) string {
+	for _, v := range env {
+		k, x, ok := strings.Cut(v, "=")
+		if ok && k == key {
+			return x
+		}
+	}
+	return ""
+}
+
 func Live(home string, env []string, reg provider.Registry) Sources {
 	runner := Commands{}
-	return Sources{"codex": Codex{runner, home, env, reg}, "claude": Claude{Registry: reg, Runner: runner, Home: home, Env: env}, "grok": Grok{Runner: runner, Env: env, Home: home, Registry: reg}, "agy": Agy{runner, home, env, reg}}
+	snapDir := SnapshotDir(home, lookupEnvValue(env, "XDG_STATE_HOME"))
+	return Sources{"codex": Codex{runner, home, env, reg}, "claude": Claude{Registry: reg, Runner: runner, Home: home, Env: env, SnapshotDir: snapDir}, "grok": Grok{Runner: runner, Env: env, Home: home, Registry: reg}, "agy": Agy{runner, home, env, reg}}
 }

@@ -124,6 +124,10 @@ quota_pool = "shared-pool-id"
   isolated directory and launch the genuine CLI's own login flow (`claude auth
   login`, `codex login`, or `agy`). For `claude`, the profile must use
   `config_dir`.
+- **Claude usage via `statusLine`:** Claude Code exposes live 5h/7d rate limits
+  to `statusLine` hooks. Add `"statusLine": {"type": "command", "command": "sb statusline"}`
+  to `~/.claude/settings.json` so `sb usage` and quota-striping automatically
+  read your latest Claude headroom.
 - **Antigravity (`agy`)** uses one implicit `agy/personal` until you declare any
   `agy/...` entries. Accounts sharing a `quota_pool` share one allowance:
   automatic selection only ever considers the first configured member, so `sb`

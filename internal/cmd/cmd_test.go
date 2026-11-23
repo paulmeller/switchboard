@@ -7,6 +7,7 @@ import (
 	"os"
 	"path/filepath"
 	"reflect"
+	"strings"
 	"testing"
 	"time"
 
@@ -406,5 +407,31 @@ home = "~/agy-second"
 	a := App{Out: &out, Err: &diag, Home: home, Env: []string{"PATH=" + binDir, "SB_CONFIG=" + cfgNoDir}, Execute: execFn}
 	if a.Run([]string{"login", "claude/work"}) != 2 {
 		t.Fatal("expected exit 2 for token-based claude login")
+	}
+}
+
+func TestStatuslineCommand(t *testing.T) {
+	home := t.TempDir()
+	payload := `{"rate_limits":{"five_hour":{"used_percentage":18.5,"resets_at":1800000100},"seven_day":{"used_percentage":42.0,"resets_at":1800000000}}}`
+	var out, diag bytes.Buffer
+	a := App{
+		In:   strings.NewReader(payload),
+		Out:  &out,
+		Err:  &diag,
+		Home: home,
+		Env:  []string{"SB_ACTIVE_ACCOUNT=claude/work"},
+	}
+	if a.Run([]string{"statusline"}) != 0 {
+		t.Fatalf("statusline failed: %s", diag.String())
+	}
+	snap, err := (usage.Snapshot{Dir: usage.SnapshotDir(home, "")}).Read(context.Background(), "claude", "work")
+	if err != nil || snap.Five == nil || *snap.Five != 18.5 || snap.Weekly == nil || *snap.Weekly != 42.0 {
+		t.Fatalf("expected claude-work snapshot, got %+v err=%v", snap, err)
+	}
+
+	// Non-rate-limit statusLine tick is a silent no-op.
+	a.In = strings.NewReader(`{"model":{"id":"claude"}}`)
+	if a.Run([]string{"statusline"}) != 0 {
+		t.Fatalf("expected silent no-op for payload without rate_limits")
 	}
 }

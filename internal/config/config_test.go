@@ -346,7 +346,7 @@ home = "~/codex-client"
 		t.Fatal("missing custom codex spec", codexSpec, ok)
 	}
 	env, err := provider.Env(claudeSpec, "/home/u", []string{"CLAUDE_OAUTH_TOKEN_CLIENT=tok"})
-	if err != nil || len(env) != 2 {
+	if err != nil || len(env) != 3 {
 		t.Fatal("custom claude env failed", env, err)
 	}
 	if provider.CodexHome(codexSpec, "/home/u") != "/home/u/codex-client" {

@@ -299,6 +299,7 @@ func Env(s Spec, home string, env []string) ([]string, error) {
 	} else {
 		values["CODEX_HOME"] = CodexHome(s, home)
 	}
+	values["SB_ACTIVE_ACCOUNT"] = a.ID()
 	out := make([]string, 0, len(values))
 	for k, v := range values {
 		out = append(out, k+"="+v)

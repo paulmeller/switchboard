@@ -100,6 +100,82 @@ func (e safeError) Error() string { return string(e) }
 // Snapshot reads only dedicated numeric snapshots, never provider files or sessions.
 type Snapshot struct{ Dir string }
 
+// SnapshotDir returns the default snapshot directory under XDG state home.
+func SnapshotDir(home, xdgState string) string {
+	if xdgState == "" {
+		xdgState = filepath.Join(home, ".local", "state")
+	}
+	return filepath.Join(xdgState, "switchboard", "snapshots")
+}
+
+// ParseStatusline extracts normalized numeric rate limits from Claude Code's
+// statusLine stdin JSON without retaining transcripts, prompts, or secrets.
+func ParseStatusline(raw []byte, now time.Time) (Data, error) {
+	var payload struct {
+		RateLimits *struct {
+			FiveHour *statuslineWindow `json:"five_hour"`
+			SevenDay *statuslineWindow `json:"seven_day"`
+		} `json:"rate_limits"`
+	}
+	if json.Unmarshal(raw, &payload) != nil || payload.RateLimits == nil {
+		return Data{}, errors.New("no rate_limits in statusline payload")
+	}
+	yes := true
+	d := Data{ObservedAt: now.UTC(), LoginOK: &yes}
+	if w := payload.RateLimits.FiveHour; w != nil {
+		if pct, ok := validPct(w.UsedPercentage); ok {
+			d.Five = &pct
+		}
+		if r := parseReset(w.ResetsAt); r != nil {
+			d.FiveReset = r
+		}
+	}
+	if w := payload.RateLimits.SevenDay; w != nil {
+		if pct, ok := validPct(w.UsedPercentage); ok {
+			d.Weekly = &pct
+		}
+		if r := parseReset(w.ResetsAt); r != nil {
+			d.WeeklyReset = r
+		}
+	}
+	if d.Five == nil && d.Weekly == nil {
+		return Data{}, errors.New("no rate_limits in statusline payload")
+	}
+	return d, nil
+}
+
+type statuslineWindow struct {
+	UsedPercentage *float64 `json:"used_percentage"`
+	ResetsAt       any      `json:"resets_at"`
+}
+
+func validPct(p *float64) (float64, bool) {
+	if p == nil || math.IsNaN(*p) || math.IsInf(*p, 0) || *p < 0 || *p > 100 {
+		return 0, false
+	}
+	return math.Round(*p*100) / 100, true
+}
+
+func parseReset(v any) *string {
+	switch t := v.(type) {
+	case float64:
+		if t <= 0 || math.IsNaN(t) || math.IsInf(t, 0) {
+			return nil
+		}
+		s := time.Unix(int64(t), 0).UTC().Format(time.RFC3339)
+		return &s
+	case string:
+		parsed, err := time.Parse(time.RFC3339, t)
+		if err != nil {
+			return nil
+		}
+		s := parsed.UTC().Format(time.RFC3339)
+		return &s
+	default:
+		return nil
+	}
+}
+
 func (s Snapshot) Read(ctx context.Context, tool, profile string) (Data, error) {
 	var d Data
 	if ctx.Err() != nil {
